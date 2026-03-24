@@ -1,24 +1,22 @@
+/**
+ * Supabase Client & Data Layer
+ * =============================
+ * - Personas: CRUD + search
+ * - Tarifas: read/update department rates from DB
+ * - Facturas: single invoice per person (multiple dept lines stored as JSON)
+ * - Lotes: batch grouping with custom name
+ */
+
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = 'https://mcuxvoyrhfwafoxvxinm.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jdXh2b3lyaGZ3YWZveHZ4aW5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MDgxOTgsImV4cCI6MjA4OTA4NDE5OH0.eYhxZvhDLE6Ej034WYzy-wObCLbOW42qqdRgVn8K8vQ';
+const SUPABASE_URL = 'https://mcuxvoyrhfwafoxvxinm.supabase.co';
+const SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jdXh2b3lyaGZ3YWZveHZ4aW5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MDgxOTgsImV4cCI6MjA4OTA4NDE5OH0.eYhxZvhDLE6Ej034WYzy-wObCLbOW42qqdRgVn8K8vQ';
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Department rates
-export const DEPARTAMENTOS = {
-  TAPROOM: { label: 'Taproom', tarifa: 30 },
-  COCINA: { label: 'Cocina', tarifa: 25 },
-  DISTRIBUCION: { label: 'Distribución', tarifa: 25 },
-  PRODUCCION: { label: 'Producción', tarifa: 25 },
-  EVENTO: { label: 'Evento', tarifa: 35 },
-} as const;
+// ─── Types ───────────────────────────────────────────────
 
-export type DepartamentoKey = keyof typeof DEPARTAMENTOS;
-
-export const TARIFA_HORA_EXTRA = 5;
-
-// Types
 export interface Persona {
   id?: number;
   nombre_completo: string;
@@ -26,10 +24,36 @@ export interface Persona {
   dv: string;
   cuenta_bancaria: string;
   nombre_banco: string;
-  tipo_cuenta: 'Ahorros' | 'Corriente';
+  tipo_cuenta: string;
   titular_cuenta: string;
+}
+
+export interface TarifaDepartamento {
+  id: number;
+  clave: string;
+  nombre: string;
+  tarifa_diaria: number;
+  tarifa_hora_extra: number;
+}
+
+/** A single department line item within an invoice */
+export interface DeptLineItem {
+  departamento: string;
+  clave: string;
+  dias: number;
+  tarifa_diaria: number;
+  horas_extra: number;
+  tarifa_hora_extra: number;
+  subtotal: number;
+}
+
+export interface Lote {
+  id?: number;
+  nombre: string;
+  fecha: string;
+  total_facturas: number;
+  monto_total: number;
   created_at?: string;
-  updated_at?: string;
 }
 
 export interface Factura {
@@ -44,64 +68,71 @@ export interface Factura {
   tarifa_diaria?: number;
   horas_extra?: number;
   monto_horas_extra?: number;
-  created_at?: string;
-  // Joined data
+  detalle_departamentos?: DeptLineItem[];
+  lote_id?: number;
   persona?: Persona;
+  created_at?: string;
 }
 
-// Represents one department entry in the multi-invoice form
-export interface DepartamentoEntry {
-  key: DepartamentoKey;
-  dias: number;
-  horasExtra: number;
+/** Data for a single invoice being prepared in the UI */
+export interface InvoiceDraft {
+  persona: Persona;
+  departamentos: DeptLineItem[];
+  empresa: string;
+  fecha: string;
+  numero_factura: number;
+  saldo_adeudado: number;
 }
 
-// API functions
-export async function buscarPersonas(query: string): Promise<Persona[]> {
+// ─── Tarifas ─────────────────────────────────────────────
+
+export async function obtenerTarifas(): Promise<TarifaDepartamento[]> {
   const { data, error } = await supabase
-    .from('personas')
+    .from('tarifas_departamento')
     .select('*')
-    .or(`nombre_completo.ilike.%${query}%,cedula.ilike.%${query}%`)
-    .order('nombre_completo')
-    .limit(10);
-
+    .order('id');
   if (error) throw error;
   return data || [];
 }
 
-export async function obtenerPersonaPorId(id: number): Promise<Persona | null> {
+export async function actualizarTarifa(
+  clave: string,
+  tarifa_diaria: number,
+  tarifa_hora_extra: number
+): Promise<void> {
+  const { error } = await supabase
+    .from('tarifas_departamento')
+    .update({ tarifa_diaria, tarifa_hora_extra, updated_at: new Date().toISOString() })
+    .eq('clave', clave);
+  if (error) throw error;
+}
+
+// ─── Personas ────────────────────────────────────────────
+
+export async function buscarPersonas(query: string): Promise<Persona[]> {
+  const q = query.trim();
+  if (!q) return [];
   const { data, error } = await supabase
     .from('personas')
     .select('*')
-    .eq('id', id)
-    .single();
-
+    .or(`nombre_completo.ilike.%${q}%,cedula.ilike.%${q}%`)
+    .order('nombre_completo')
+    .limit(10);
   if (error) throw error;
-  return data;
+  return data || [];
 }
 
-export async function crearPersona(persona: Omit<Persona, 'id' | 'created_at' | 'updated_at'>): Promise<Persona> {
+export async function crearPersona(persona: Omit<Persona, 'id'>): Promise<Persona> {
   const { data, error } = await supabase
     .from('personas')
     .insert(persona)
     .select()
     .single();
-
   if (error) throw error;
   return data;
 }
 
-export async function actualizarPersona(id: number, persona: Partial<Persona>): Promise<Persona> {
-  const { data, error } = await supabase
-    .from('personas')
-    .update({ ...persona, updated_at: new Date().toISOString() })
-    .eq('id', id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
-}
+// ─── Número consecutivo ──────────────────────────────────
 
 export async function obtenerSiguienteNumeroFactura(): Promise<number> {
   const { data, error } = await supabase
@@ -109,68 +140,81 @@ export async function obtenerSiguienteNumeroFactura(): Promise<number> {
     .select('numero_factura')
     .order('numero_factura', { ascending: false })
     .limit(1);
-
   if (error) throw error;
   if (!data || data.length === 0) return 1;
   return data[0].numero_factura + 1;
 }
 
-export async function crearFactura(factura: Omit<Factura, 'id' | 'created_at' | 'persona'>): Promise<Factura> {
+// ─── Lotes ───────────────────────────────────────────────
+
+export async function crearLote(lote: Omit<Lote, 'id' | 'created_at'>): Promise<Lote> {
   const { data, error } = await supabase
-    .from('facturas')
-    .insert(factura)
+    .from('lotes_facturas')
+    .insert({
+      nombre: lote.nombre,
+      fecha: lote.fecha,
+      total_facturas: lote.total_facturas,
+      monto_total: lote.monto_total,
+    })
     .select()
     .single();
-
   if (error) throw error;
   return data;
 }
 
-export async function crearFacturasBatch(facturas: Omit<Factura, 'id' | 'created_at' | 'persona'>[]): Promise<Factura[]> {
+export async function obtenerLotes(): Promise<Lote[]> {
   const { data, error } = await supabase
-    .from('facturas')
-    .insert(facturas)
-    .select();
-
+    .from('lotes_facturas')
+    .select('*')
+    .order('created_at', { ascending: false });
   if (error) throw error;
   return data || [];
+}
+
+export async function obtenerFacturasPorLote(loteId: number): Promise<Factura[]> {
+  const { data, error } = await supabase
+    .from('facturas')
+    .select('*, persona:personas(*)')
+    .eq('lote_id', loteId)
+    .order('numero_factura');
+  if (error) throw error;
+  return data || [];
+}
+
+// ─── Facturas ────────────────────────────────────────────
+
+export async function guardarFacturasBatch(
+  facturas: Array<{
+    numero_factura: number;
+    fecha: string;
+    empresa: string;
+    saldo_adeudado: number;
+    persona_id: number;
+    departamento: string;
+    dias_trabajados: number;
+    tarifa_diaria: number;
+    horas_extra: number;
+    monto_horas_extra: number;
+    detalle_departamentos: DeptLineItem[];
+    lote_id: number;
+  }>
+): Promise<void> {
+  const { error } = await supabase.from('facturas').insert(facturas);
+  if (error) throw error;
 }
 
 export async function obtenerFacturas(): Promise<Factura[]> {
   const { data, error } = await supabase
     .from('facturas')
     .select('*, persona:personas(*)')
-    .order('numero_factura', { ascending: false });
-
+    .order('numero_factura', { ascending: false })
+    .limit(100);
   if (error) throw error;
   return data || [];
 }
 
-export async function obtenerFacturaPorId(id: number): Promise<Factura | null> {
-  const { data, error } = await supabase
-    .from('facturas')
-    .select('*, persona:personas(*)')
-    .eq('id', id)
-    .single();
+// ─── Helpers ─────────────────────────────────────────────
 
-  if (error) throw error;
-  return data;
-}
-
-export async function obtenerTodasPersonas(): Promise<Persona[]> {
-  const { data, error } = await supabase
-    .from('personas')
-    .select('*')
-    .order('nombre_completo');
-
-  if (error) throw error;
-  return data || [];
-}
-
-// Calculate total for a department entry
-export function calcularTotalDepartamento(entry: DepartamentoEntry): number {
-  const tarifa = DEPARTAMENTOS[entry.key].tarifa;
-  const montoDias = entry.dias * tarifa;
-  const montoExtras = entry.horasExtra * TARIFA_HORA_EXTRA;
-  return montoDias + montoExtras;
+export function calcularTotalFactura(items: DeptLineItem[]): number {
+  return items.reduce((sum, item) => sum + item.subtotal, 0);
 }

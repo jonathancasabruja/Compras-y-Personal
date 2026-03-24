@@ -1,83 +1,34 @@
 /**
- * InvoicePreview Component
- * ========================
- * Replicates the exact invoice template from JEANROLDAN.docx
- * Uses explicit hex/rgb colors for print compatibility
- * Now supports department info, days worked, extra hours
- * Fits on exactly 1 printed page
+ * InvoicePreview — Renders one invoice with multiple department line items.
+ * Uses explicit hex colors (no oklch) for PDF/print compatibility.
  */
 
-import { format } from 'date-fns';
-import { es } from 'date-fns/locale';
-import type { Persona } from '@/lib/supabase';
+import type { InvoiceDraft, DeptLineItem } from '@/lib/supabase';
 
-interface InvoicePreviewProps {
-  persona: Persona;
-  factura: {
-    numero_factura: number;
-    fecha: string;
-    empresa: string;
-    saldo_adeudado: number;
-    departamento?: string;
-    dias_trabajados?: number;
-    tarifa_diaria?: number;
-    horas_extra?: number;
-    monto_horas_extra?: number;
-  };
+interface Props {
+  draft: InvoiceDraft;
+  id?: string;
 }
 
-export default function InvoicePreview({ persona, factura }: InvoicePreviewProps) {
-  const formatCurrency = (amount: number) => {
-    return `USD ${amount.toFixed(2)}`;
-  };
+function fmt(n: number) {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
-  const formatDate = (dateStr: string) => {
-    try {
-      const date = new Date(dateStr + 'T12:00:00');
-      return format(date, 'dd/MM/yyyy', { locale: es });
-    } catch {
-      return dateStr;
-    }
-  };
+function formatDate(dateStr: string) {
+  const parts = dateStr.split('-');
+  return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : dateStr;
+}
 
-  const montoDias = (factura.dias_trabajados || 0) * (factura.tarifa_diaria || 0);
-  const montoExtras = factura.monto_horas_extra || 0;
-  const total = factura.saldo_adeudado;
+export default function InvoicePreview({ draft, id }: Props) {
+  const { persona, departamentos, empresa, fecha, numero_factura, saldo_adeudado } = draft;
 
-  // Build line items for the table
-  const lineItems: { desc: string; qty: number; rate: number; amount: number }[] = [];
-
-  if (factura.dias_trabajados && factura.tarifa_diaria) {
-    lineItems.push({
-      desc: `SERVICIOS PROFESIONALES - ${factura.departamento || 'GENERAL'}`,
-      qty: factura.dias_trabajados,
-      rate: factura.tarifa_diaria,
-      amount: montoDias,
-    });
-  }
-
-  if (factura.horas_extra && factura.horas_extra > 0) {
-    lineItems.push({
-      desc: 'HORAS EXTRA',
-      qty: factura.horas_extra,
-      rate: 5,
-      amount: montoExtras,
-    });
-  }
-
-  // Fallback: if no line items (e.g. old invoices), show single line
-  if (lineItems.length === 0) {
-    lineItems.push({
-      desc: 'SERVICIOS PROFESIONALES',
-      qty: 1,
-      rate: total,
-      amount: total,
-    });
-  }
+  const deptNames = departamentos.map((d) => d.departamento).join(', ');
+  const totalHorasExtra = departamentos.reduce((s, d) => s + d.horas_extra, 0);
+  const tarifaHoraExtra = departamentos[0]?.tarifa_hora_extra ?? 5;
 
   return (
     <div
-      id="invoice-content"
+      id={id}
       className="invoice-preview"
       style={{
         fontFamily: "'DM Sans', system-ui, sans-serif",
@@ -95,127 +46,80 @@ export default function InvoicePreview({ persona, factura }: InvoicePreviewProps
         flexDirection: 'column',
       }}
     >
-      {/* Header: Name/ID left, FACTURA right */}
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '32px' }}>
         <div>
-          <h2
-            style={{
-              fontSize: '14px',
-              fontWeight: 700,
-              letterSpacing: '0.02em',
-              color: '#111111',
-              textTransform: 'uppercase',
-              margin: 0,
-            }}
-          >
+          <h2 style={{ fontSize: '14px', fontWeight: 700, letterSpacing: '0.02em', color: '#111111', textTransform: 'uppercase', margin: 0 }}>
             {persona.nombre_completo}
           </h2>
-          <p
-            style={{
-              fontSize: '12px',
-              color: '#666666',
-              fontFamily: "'JetBrains Mono', monospace",
-              margin: '2px 0 0 0',
-            }}
-          >
+          <p style={{ fontSize: '12px', color: '#666666', fontFamily: "'JetBrains Mono', monospace", margin: '2px 0 0 0' }}>
             {persona.cedula}{persona.dv ? ` DV${persona.dv}` : ''}
           </p>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <h1
-            style={{
-              fontSize: '32px',
-              fontWeight: 300,
-              letterSpacing: '0.15em',
-              color: '#aaaaaa',
-              lineHeight: 1,
-              margin: 0,
-            }}
-          >
+          <h1 style={{ fontSize: '32px', fontWeight: 300, letterSpacing: '0.15em', color: '#aaaaaa', lineHeight: 1, margin: 0 }}>
             FACTURA
           </h1>
-          <p
-            style={{
-              fontSize: '13px',
-              color: '#888888',
-              fontFamily: "'JetBrains Mono', monospace",
-              margin: '4px 0 0 0',
-            }}
-          >
-            # {factura.numero_factura}
+          <p style={{ fontSize: '13px', color: '#888888', fontFamily: "'JetBrains Mono', monospace", margin: '4px 0 0 0' }}>
+            # {numero_factura}
           </p>
         </div>
       </div>
 
-      {/* Billing info and date/amount */}
+      {/* Billing info */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '32px' }}>
         <div>
           <p style={{ fontSize: '11px', color: '#888888', margin: '0 0 4px 0' }}>Cobrar a:</p>
-          <p style={{ fontSize: '13px', fontWeight: 700, color: '#111111', margin: 0 }}>
-            {factura.empresa}
-          </p>
+          <p style={{ fontSize: '13px', fontWeight: 700, color: '#111111', margin: 0 }}>{empresa}</p>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '6px', borderBottom: '1px solid #d0d0d0', paddingBottom: '2px' }}>
             <span style={{ fontSize: '11px', color: '#888888' }}>Fecha:</span>
-            <span style={{ fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-              {formatDate(factura.fecha)}
-            </span>
+            <span style={{ fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>{formatDate(fecha)}</span>
           </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '24px',
-              padding: '6px 12px',
-              marginTop: '4px',
-              backgroundColor: '#f3f3f3',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '6px 12px', marginTop: '4px', backgroundColor: '#f3f3f3' }}>
             <span style={{ fontSize: '11px', fontWeight: 600, color: '#444444' }}>Saldo Adeudado:</span>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: '#111111', fontFamily: "'JetBrains Mono', monospace" }}>
-              {formatCurrency(total)}
-            </span>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#111111', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(saldo_adeudado)}</span>
           </div>
         </div>
       </div>
 
-      {/* Items Table */}
+      {/* Table */}
       <div style={{ marginBottom: '24px' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ backgroundColor: '#333333' }}>
-              <th style={{ textAlign: 'left', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '45%' }}>
-                Artículo
-              </th>
-              <th style={{ textAlign: 'center', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '15%' }}>
-                Cantidad
-              </th>
-              <th style={{ textAlign: 'right', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '20%' }}>
-                Tasa
-              </th>
-              <th style={{ textAlign: 'right', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '20%' }}>
-                Monto
-              </th>
+              <th style={{ textAlign: 'left', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '45%' }}>Artículo</th>
+              <th style={{ textAlign: 'center', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '15%' }}>Cantidad</th>
+              <th style={{ textAlign: 'right', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '20%' }}>Tasa</th>
+              <th style={{ textAlign: 'right', fontSize: '11px', fontWeight: 600, color: '#ffffff', padding: '8px 12px', width: '20%' }}>Monto</th>
             </tr>
           </thead>
           <tbody>
-            {lineItems.map((item, idx) => (
+            {departamentos.map((item: DeptLineItem, idx: number) => (
               <tr key={idx} style={{ borderBottom: '1px solid #f0f0f0' }}>
                 <td style={{ padding: '10px 12px', fontSize: '12px', color: '#222222', fontWeight: 600 }}>
-                  {item.desc}
+                  SERVICIOS PROFESIONALES – {item.departamento}
                 </td>
                 <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {item.qty}
+                  {item.dias}
                 </td>
                 <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {formatCurrency(item.rate)}
+                  USD {fmt(item.tarifa_diaria)}
                 </td>
                 <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {formatCurrency(item.amount)}
+                  USD {fmt(item.dias * item.tarifa_diaria)}
                 </td>
               </tr>
             ))}
+            {totalHorasExtra > 0 && (
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '10px 12px', fontSize: '12px', color: '#222222', fontWeight: 600 }}>HORAS EXTRA</td>
+                <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>{totalHorasExtra}</td>
+                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(tarifaHoraExtra)}</td>
+                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(totalHorasExtra * tarifaHoraExtra)}</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -225,44 +129,32 @@ export default function InvoicePreview({ persona, factura }: InvoicePreviewProps
         <div style={{ width: '220px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
             <span style={{ fontSize: '11px', color: '#888888' }}>Subtotal:</span>
-            <span style={{ fontSize: '12px', color: '#222222', fontFamily: "'JetBrains Mono', monospace" }}>
-              {formatCurrency(total)}
-            </span>
+            <span style={{ fontSize: '12px', color: '#222222', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(saldo_adeudado)}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
             <span style={{ fontSize: '11px', color: '#888888' }}>Impuesto (0%):</span>
-            <span style={{ fontSize: '12px', color: '#222222', fontFamily: "'JetBrains Mono', monospace" }}>
-              USD 0.00
-            </span>
+            <span style={{ fontSize: '12px', color: '#222222', fontFamily: "'JetBrains Mono', monospace" }}>USD 0.00</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0' }}>
             <span style={{ fontSize: '12px', fontWeight: 700, color: '#111111' }}>Total:</span>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: '#111111', fontFamily: "'JetBrains Mono', monospace" }}>
-              {formatCurrency(total)}
-            </span>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#111111', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(saldo_adeudado)}</span>
           </div>
         </div>
       </div>
 
-      {/* Spacer to push notes to bottom */}
+      {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Notes / Bank Info + Department */}
+      {/* Notes */}
       <div style={{ borderTop: '1px solid #e5e5e5', paddingTop: '16px' }}>
         <p style={{ fontSize: '11px', color: '#888888', margin: '0 0 6px 0' }}>Notas:</p>
         <div style={{ fontSize: '12px', color: '#444444' }}>
-          {factura.departamento && (
-            <p style={{ margin: '0 0 6px 0', fontWeight: 600, color: '#222222' }}>
-              Departamento: {factura.departamento}
-            </p>
-          )}
+          <p style={{ margin: '0 0 6px 0', fontWeight: 600, color: '#222222' }}>Departamento: {deptNames}</p>
           <p style={{ margin: '0 0 2px 0' }}>{persona.nombre_banco}</p>
           <p style={{ margin: '0 0 2px 0' }}>Cuenta de {persona.tipo_cuenta}</p>
           <p style={{ margin: '0 0 2px 0', fontFamily: "'JetBrains Mono', monospace" }}>{persona.cuenta_bancaria}</p>
           {persona.titular_cuenta && persona.titular_cuenta !== persona.nombre_completo && (
-            <p style={{ fontSize: '11px', color: '#888888', margin: '4px 0 0 0' }}>
-              Titular: {persona.titular_cuenta}
-            </p>
+            <p style={{ fontSize: '11px', color: '#888888', margin: '4px 0 0 0' }}>Titular: {persona.titular_cuenta}</p>
           )}
         </div>
       </div>
