@@ -4,8 +4,9 @@
  * Flow:
  *  1. User adds one or more persons to the batch
  *  2. For each person: select departments, days, hours → single invoice per person
- *  3. Name the batch, preview all, save all, print all
- *  4. Invoice numbers are forced consecutive from DB
+ *  3. Invoice number is per-person consecutive (editable)
+ *  4. Personalized rates per person per department
+ *  5. Name the batch, preview all, save all, print all
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -21,15 +22,12 @@ import InvoicePreview from '@/components/InvoicePreview';
 import InvoiceHistory from '@/components/InvoiceHistory';
 import TarifasConfig from '@/components/TarifasConfig';
 import {
-  obtenerSiguienteNumeroFactura,
   obtenerTarifas,
   crearLote,
   guardarFacturasBatch,
-  calcularTotalFactura,
   type Persona,
   type InvoiceDraft,
   type TarifaDepartamento,
-  type DeptLineItem,
 } from '@/lib/supabase';
 import {
   FileText,
@@ -42,7 +40,6 @@ import {
   RotateCcw,
   ChevronLeft,
   ChevronRight,
-  Trash2,
   UserPlus,
   Package,
 } from 'lucide-react';
@@ -59,7 +56,6 @@ type ViewMode = 'create' | 'preview' | 'history-view';
 export default function Home() {
   // ─── Global state ──────────────────────────────────
   const [tarifas, setTarifas] = useState<TarifaDepartamento[]>([]);
-  const [nextInvoiceNum, setNextInvoiceNum] = useState(1);
   const [loadingInit, setLoadingInit] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>('create');
   const [activeTab, setActiveTab] = useState('create');
@@ -68,7 +64,7 @@ export default function Home() {
   // ─── Batch creation state ──────────────────────────
   const [batchEntries, setBatchEntries] = useState<BatchEntry[]>([]);
   const [batchName, setBatchName] = useState('');
-  const [currentEditIndex, setCurrentEditIndex] = useState(-1); // which entry is being edited, -1 = adding new
+  const [currentEditIndex, setCurrentEditIndex] = useState(-1);
 
   // Current person being added
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
@@ -88,13 +84,12 @@ export default function Home() {
   const [sharedFecha, setSharedFecha] = useState(new Date().toISOString().split('T')[0]);
   const [sharedEmpresa, setSharedEmpresa] = useState('');
 
-  // ─── Init: load tarifas + next invoice number ──────
+  // ─── Init: load tarifas ────────────────────────────
   useEffect(() => {
     (async () => {
       try {
-        const [t, n] = await Promise.all([obtenerTarifas(), obtenerSiguienteNumeroFactura()]);
+        const t = await obtenerTarifas();
         setTarifas(t);
-        setNextInvoiceNum(n);
       } catch (err) {
         console.error(err);
         toast.error('Error al conectar con la base de datos');
@@ -110,6 +105,7 @@ export default function Home() {
       empresa: '',
       departamentos: [],
       totalCalculado: 0,
+      numeroFactura: 0,
     };
   }
 
@@ -117,16 +113,20 @@ export default function Home() {
   const handlePersonSelected = (persona: Persona) => {
     setSelectedPersona(persona);
     setShowNewPersonForm(false);
+    // Reset form data so InvoiceForm can load per-person data
+    setCurrentFormData(emptyFormData());
   };
 
   const handlePersonCreated = (persona: Persona) => {
     setSelectedPersona(persona);
     setShowNewPersonForm(false);
+    setCurrentFormData(emptyFormData());
   };
 
   const handleClearPerson = () => {
     setSelectedPersona(null);
     setShowNewPersonForm(false);
+    setCurrentFormData(emptyFormData());
   };
 
   // ─── Add person to batch ───────────────────────────
@@ -143,13 +143,26 @@ export default function Home() {
       toast.error('Ingrese los días trabajados para cada departamento');
       return;
     }
+    if (!currentFormData.numeroFactura || currentFormData.numeroFactura <= 0) {
+      toast.error('Ingrese un número de factura válido');
+      return;
+    }
 
-    // Check if person already in batch
+    // Check if person already in batch (except when editing)
     const alreadyExists = batchEntries.some(
       (e, idx) => e.persona.id === selectedPersona.id && idx !== currentEditIndex
     );
     if (alreadyExists) {
       toast.error('Esta persona ya está en el lote');
+      return;
+    }
+
+    // Check if invoice number already used in batch
+    const numUsed = batchEntries.some(
+      (e, idx) => e.formData.numeroFactura === currentFormData.numeroFactura && idx !== currentEditIndex
+    );
+    if (numUsed) {
+      toast.error('Ese número de factura ya está asignado a otra persona en este lote');
       return;
     }
 
@@ -159,7 +172,6 @@ export default function Home() {
     };
 
     if (currentEditIndex >= 0) {
-      // Editing existing entry
       setBatchEntries((prev) => prev.map((e, i) => (i === currentEditIndex ? entry : e)));
       setCurrentEditIndex(-1);
     } else {
@@ -199,13 +211,13 @@ export default function Home() {
       return;
     }
 
-    // Build drafts with consecutive numbers
-    const drafts: InvoiceDraft[] = batchEntries.map((entry, idx) => ({
+    // Build drafts using each entry's own invoice number
+    const drafts: InvoiceDraft[] = batchEntries.map((entry) => ({
       persona: entry.persona,
       departamentos: entry.formData.departamentos,
       empresa: sharedEmpresa,
       fecha: sharedFecha,
-      numero_factura: nextInvoiceNum + idx,
+      numero_factura: entry.formData.numeroFactura,
       saldo_adeudado: entry.formData.totalCalculado,
     }));
 
@@ -220,7 +232,6 @@ export default function Home() {
     if (previewDrafts.length === 0) return;
     setIsSaving(true);
     try {
-      // Create lote first
       const totalMonto = previewDrafts.reduce((s, d) => s + d.saldo_adeudado, 0);
       const lote = await crearLote({
         nombre: batchName.trim(),
@@ -229,7 +240,6 @@ export default function Home() {
         monto_total: totalMonto,
       });
 
-      // Build factura records
       const facturas = previewDrafts.map((draft) => {
         const totalDias = draft.departamentos.reduce((s, d) => s + d.dias, 0);
         const totalHorasExtra = draft.departamentos.reduce((s, d) => s + d.horas_extra, 0);
@@ -238,8 +248,7 @@ export default function Home() {
           ? draft.departamentos.reduce((s, d) => s + d.tarifa_diaria, 0) / draft.departamentos.length
           : 0;
         const montoHorasExtra = draft.departamentos.reduce(
-          (s, d) => s + d.horas_extra * d.tarifa_hora_extra,
-          0
+          (s, d) => s + d.horas_extra * d.tarifa_hora_extra, 0
         );
 
         return {
@@ -262,12 +271,9 @@ export default function Home() {
       toast.success(`Lote "${batchName}" guardado con ${previewDrafts.length} factura(s)`);
       setIsSaved(true);
       setRefreshKey((k) => k + 1);
-
-      // Update next invoice number
-      setNextInvoiceNum(previewDrafts[previewDrafts.length - 1].numero_factura + 1);
     } catch (err: any) {
       if (err?.message?.includes('duplicate') || err?.code === '23505') {
-        toast.error('Ya existe una factura con alguno de esos números. Recargue la página.');
+        toast.error('Ya existe una factura con alguno de esos números. Verifique los números de factura.');
       } else {
         toast.error('Error al guardar: ' + (err?.message || 'Error desconocido'));
       }
@@ -291,8 +297,9 @@ export default function Home() {
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
         body{background:#fff;font-family:'DM Sans',sans-serif;}
-        @media print{@page{size:A4;margin:0;}body{margin:0;}}
-      </style></head><body>${allHtml}
+        @media print{@page{size:A4 portrait;margin:0;}body{margin:0;}}
+      </style>
+    </head><body>${allHtml}
       <script>document.fonts.ready.then(()=>{setTimeout(()=>{window.print();window.close();},500);});<\/script>
     </body></html>`);
     printWindow.document.close();
@@ -307,7 +314,7 @@ export default function Home() {
   };
 
   const handleExportPDF = () => {
-    handlePrint(); // Same mechanism — browser print dialog allows "Save as PDF"
+    handlePrint();
   };
 
   // ─── History handlers ──────────────────────────────
@@ -336,12 +343,6 @@ export default function Home() {
     setActiveTab('create');
     setSharedFecha(new Date().toISOString().split('T')[0]);
     setSharedEmpresa('');
-    try {
-      const n = await obtenerSiguienteNumeroFactura();
-      setNextInvoiceNum(n);
-    } catch {
-      // silent
-    }
   }, []);
 
   const handleTarifasUpdated = async () => {
@@ -359,7 +360,8 @@ export default function Home() {
   const canAddToBatch =
     selectedPersona &&
     currentFormData.departamentos.length > 0 &&
-    currentFormData.departamentos.every((d) => d.dias > 0);
+    currentFormData.departamentos.every((d) => d.dias > 0) &&
+    currentFormData.numeroFactura > 0;
 
   // ─── Render invoice HTML for print ─────────────────
   function renderInvoiceHTML(draft: InvoiceDraft): string {
@@ -652,12 +654,6 @@ export default function Home() {
                         </select>
                       </div>
                     </div>
-                    <div className="mt-2 text-xs font-mono" style={{ color: '#6b7280' }}>
-                      Próximo N° de factura: <strong style={{ color: '#1B4965' }}>#{nextInvoiceNum}</strong>
-                      {batchEntries.length > 0 && (
-                        <span> → #{nextInvoiceNum + batchEntries.length - 1} ({batchEntries.length} factura{batchEntries.length !== 1 ? 's' : ''})</span>
-                      )}
-                    </div>
                   </Card>
 
                   {/* Add person */}
@@ -686,7 +682,12 @@ export default function Home() {
 
                     {selectedPersona && (
                       <div className="mt-4 pt-4" style={{ borderTop: '1px solid #f3f4f6' }}>
-                        <InvoiceForm data={currentFormData} onChange={setCurrentFormData} tarifas={tarifas} />
+                        <InvoiceForm
+                          data={currentFormData}
+                          onChange={setCurrentFormData}
+                          tarifas={tarifas}
+                          persona={selectedPersona}
+                        />
                         <div className="mt-4">
                           <Button
                             onClick={handleAddToBatch}
@@ -745,7 +746,7 @@ export default function Home() {
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2">
                                     <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ backgroundColor: '#f3f4f6', color: '#6b7280' }}>
-                                      #{nextInvoiceNum + idx}
+                                      #{entry.formData.numeroFactura}
                                     </span>
                                     <span className="text-sm font-medium truncate" style={{ color: '#374151' }}>
                                       {entry.persona.nombre_completo}
@@ -765,7 +766,9 @@ export default function Home() {
                                     </svg>
                                   </Button>
                                   <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => handleRemoveFromBatch(idx)}>
-                                    <Trash2 className="w-3.5 h-3.5" style={{ color: '#ef4444' }} />
+                                    <svg className="w-3.5 h-3.5" style={{ color: '#ef4444' }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
                                   </Button>
                                 </div>
                               </div>

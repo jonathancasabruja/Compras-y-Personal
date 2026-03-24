@@ -2,9 +2,11 @@
  * Supabase Client & Data Layer
  * =============================
  * - Personas: CRUD + search
- * - Tarifas: read/update department rates from DB
+ * - Tarifas globales: read/update department rates from DB
+ * - Tarifas personalizadas: per-person per-department overrides
  * - Facturas: single invoice per person (multiple dept lines stored as JSON)
  * - Lotes: batch grouping with custom name
+ * - Invoice numbering: per-person consecutive (editable)
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -32,6 +34,14 @@ export interface TarifaDepartamento {
   id: number;
   clave: string;
   nombre: string;
+  tarifa_diaria: number;
+  tarifa_hora_extra: number;
+}
+
+export interface TarifaPersona {
+  id?: number;
+  persona_id: number;
+  departamento_clave: string;
   tarifa_diaria: number;
   tarifa_hora_extra: number;
 }
@@ -84,7 +94,16 @@ export interface InvoiceDraft {
   saldo_adeudado: number;
 }
 
-// ─── Tarifas ─────────────────────────────────────────────
+/** Summary of a person's last invoice */
+export interface UltimaFacturaInfo {
+  numero_factura: number;
+  fecha: string;
+  empresa: string;
+  saldo_adeudado: number;
+  departamento?: string;
+}
+
+// ─── Tarifas Globales ───────────────────────────────────
 
 export async function obtenerTarifas(): Promise<TarifaDepartamento[]> {
   const { data, error } = await supabase
@@ -104,6 +123,50 @@ export async function actualizarTarifa(
     .from('tarifas_departamento')
     .update({ tarifa_diaria, tarifa_hora_extra, updated_at: new Date().toISOString() })
     .eq('clave', clave);
+  if (error) throw error;
+}
+
+// ─── Tarifas Personalizadas por Persona ─────────────────
+
+export async function obtenerTarifasPersona(personaId: number): Promise<TarifaPersona[]> {
+  const { data, error } = await supabase
+    .from('tarifas_persona')
+    .select('*')
+    .eq('persona_id', personaId);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function guardarTarifaPersona(
+  personaId: number,
+  departamentoClave: string,
+  tarifaDiaria: number,
+  tarifaHoraExtra: number
+): Promise<void> {
+  const { error } = await supabase
+    .from('tarifas_persona')
+    .upsert(
+      {
+        persona_id: personaId,
+        departamento_clave: departamentoClave,
+        tarifa_diaria: tarifaDiaria,
+        tarifa_hora_extra: tarifaHoraExtra,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'persona_id,departamento_clave' }
+    );
+  if (error) throw error;
+}
+
+export async function eliminarTarifaPersona(
+  personaId: number,
+  departamentoClave: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('tarifas_persona')
+    .delete()
+    .eq('persona_id', personaId)
+    .eq('departamento_clave', departamentoClave);
   if (error) throw error;
 }
 
@@ -132,8 +195,31 @@ export async function crearPersona(persona: Omit<Persona, 'id'>): Promise<Person
   return data;
 }
 
-// ─── Número consecutivo ──────────────────────────────────
+// ─── Número consecutivo POR PERSONA ─────────────────────
 
+export async function obtenerUltimaFacturaPersona(
+  personaId: number
+): Promise<UltimaFacturaInfo | null> {
+  const { data, error } = await supabase
+    .from('facturas')
+    .select('numero_factura, fecha, empresa, saldo_adeudado, departamento')
+    .eq('persona_id', personaId)
+    .order('numero_factura', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return data[0];
+}
+
+export async function obtenerSiguienteNumeroFacturaPersona(
+  personaId: number
+): Promise<number> {
+  const ultima = await obtenerUltimaFacturaPersona(personaId);
+  if (!ultima) return 1;
+  return ultima.numero_factura + 1;
+}
+
+/** Global next number (fallback for new persons with no invoices) */
 export async function obtenerSiguienteNumeroFactura(): Promise<number> {
   const { data, error } = await supabase
     .from('facturas')
@@ -217,4 +303,25 @@ export async function obtenerFacturas(): Promise<Factura[]> {
 
 export function calcularTotalFactura(items: DeptLineItem[]): number {
   return items.reduce((sum, item) => sum + item.subtotal, 0);
+}
+
+/**
+ * Merge global tarifas with per-person overrides.
+ * Returns a map: departamento_clave → { tarifa_diaria, tarifa_hora_extra }
+ */
+export function mergeTarifas(
+  globales: TarifaDepartamento[],
+  personalizadas: TarifaPersona[]
+): Map<string, { tarifa_diaria: number; tarifa_hora_extra: number }> {
+  const map = new Map<string, { tarifa_diaria: number; tarifa_hora_extra: number }>();
+  for (const g of globales) {
+    map.set(g.clave, { tarifa_diaria: g.tarifa_diaria, tarifa_hora_extra: g.tarifa_hora_extra });
+  }
+  for (const p of personalizadas) {
+    map.set(p.departamento_clave, {
+      tarifa_diaria: p.tarifa_diaria,
+      tarifa_hora_extra: p.tarifa_hora_extra,
+    });
+  }
+  return map;
 }
