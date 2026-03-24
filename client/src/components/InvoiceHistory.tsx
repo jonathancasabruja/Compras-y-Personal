@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Loader2, ChevronDown, ChevronRight, Eye, FileText, Printer } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronRight, Eye, FileText, Printer, FileSpreadsheet } from 'lucide-react';
 import {
   type Lote,
   type Factura,
@@ -18,6 +18,7 @@ import {
 interface Props {
   onViewInvoice: (draft: InvoiceDraft) => void;
   onPrintBatch: (drafts: InvoiceDraft[]) => void;
+  onDownloadCSV?: (drafts: InvoiceDraft[], filename?: string) => void;
   refreshKey?: number;
 }
 
@@ -61,7 +62,7 @@ function facturaToDraft(f: Factura): InvoiceDraft {
   };
 }
 
-export default function InvoiceHistory({ onViewInvoice, onPrintBatch, refreshKey }: Props) {
+export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownloadCSV, refreshKey }: Props) {
   const [lotes, setLotes] = useState<Lote[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedLote, setExpandedLote] = useState<number | null>(null);
@@ -108,6 +109,13 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, refreshKey
     if (!facturas) return;
     const drafts = facturas.map(facturaToDraft);
     onPrintBatch(drafts);
+  }
+
+  function handleDownloadCSVLote(loteId: number, loteNombre: string) {
+    const facturas = loteFacturas[loteId];
+    if (!facturas || !onDownloadCSV) return;
+    const drafts = facturas.map(facturaToDraft);
+    onDownloadCSV(drafts, `ACH_${loteNombre.replace(/\s+/g, '_')}.csv`);
   }
 
   if (loading) {
@@ -247,6 +255,18 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, refreshKey
                         <Printer className="w-3.5 h-3.5" />
                         Imprimir Lote
                       </Button>
+                      {onDownloadCSV && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 text-xs"
+                          style={{ color: '#16a34a', borderColor: '#bbf7d0' }}
+                          onClick={() => lote.id && handleDownloadCSVLote(lote.id, lote.nombre)}
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5" />
+                          CSV ACH
+                        </Button>
+                      )}
                     </div>
                   </>
                 ) : (

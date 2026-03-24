@@ -325,3 +325,72 @@ export function mergeTarifas(
   }
   return map;
 }
+
+// ─── Bank Route Codes (ACH) ─────────────────────────────
+
+const RUTAS_BANCO: Record<string, string> = {
+  'banco general': '71',
+  'banisi': '1614',
+  'st. georges bank': '1494',
+  'st georges bank': '1494',
+  'bac': '59',
+  'banistmo': '65',
+  'caja de ahorros': '37',
+  'global bank': '79',
+  'multibank': '52',
+  'scotiabank': '1332',
+  'metrobank': '1400',
+  'credicorp bank': '1478',
+  'banco nacional': '38',
+  'banconal': '38',
+  'towerbank': '1436',
+  'mega bank': '1588',
+  'la hipotecaria': '1614',
+  'banco delta': '1656',
+  'banco aliado': '1494',
+  'banco pichincha': '1700',
+  'banco davivienda': '1700',
+};
+
+export function obtenerRutaBanco(nombreBanco: string): string {
+  const key = nombreBanco.toLowerCase().trim();
+  for (const [banco, ruta] of Object.entries(RUTAS_BANCO)) {
+    if (key.includes(banco)) return ruta;
+  }
+  return '0000'; // Unknown bank
+}
+
+export function obtenerTipoCuentaCodigo(tipoCuenta: string): string {
+  const t = tipoCuenta.toLowerCase().trim();
+  if (t.includes('corriente')) return '03';
+  if (t.includes('ahorro')) return '04';
+  return '04'; // Default to savings
+}
+
+/** Generate CSV content in ACH bank transfer format */
+export function generarCSVBancario(drafts: InvoiceDraft[]): string {
+  const header = 'ID BENEFICIARIO,NOMBRE BENEFICIARIO,RUTA BANCO,CUENTA BANCO,TIPO CUENTA,MONTO,TIPO TRANS.,ADENDA';
+  const rows = drafts.map((d) => {
+    const cedula = d.persona.cedula;
+    const titular = d.persona.titular_cuenta || d.persona.nombre_completo;
+    const rutaBanco = obtenerRutaBanco(d.persona.nombre_banco);
+    const cuenta = d.persona.cuenta_bancaria;
+    const tipoCuenta = obtenerTipoCuentaCodigo(d.persona.tipo_cuenta);
+    const monto = d.saldo_adeudado.toFixed(2);
+    const tipoTrans = 'C';
+    const adenda = `REF*TXT**Factura N-${d.numero_factura}\\`;
+    return `${cedula},${titular},${rutaBanco},${cuenta},${tipoCuenta},${monto},${tipoTrans},${adenda}`;
+  });
+  return [header, ...rows].join('\n');
+}
+
+/** Download CSV as file */
+export function descargarCSV(contenido: string, nombreArchivo: string): void {
+  const blob = new Blob([contenido], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = nombreArchivo;
+  link.click();
+  URL.revokeObjectURL(url);
+}
