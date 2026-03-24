@@ -381,10 +381,10 @@ function sanitizeACH(text: string): string {
 /** Generate TXT content in ACH bank transfer format (semicolon separated, no header) */
 export function generarTXTBancario(drafts: InvoiceDraft[]): string {
   const rows = drafts.map((d) => {
-    const cedula = sanitizeACH(d.persona.cedula).substring(0, 15);
-    const titular = sanitizeACH(d.persona.titular_cuenta || d.persona.nombre_completo).substring(0, 22);
+    const cedula = sanitizeACH(d.persona.cedula).replace(/-/g, '').substring(0, 15);
+    const titular = sanitizeACH(d.persona.titular_cuenta || d.persona.nombre_completo).replace(/-/g, '').substring(0, 22);
     const rutaBanco = obtenerRutaBanco(d.persona.nombre_banco);
-    const cuenta = sanitizeACH(d.persona.cuenta_bancaria).substring(0, 17);
+    const cuenta = sanitizeACH(d.persona.cuenta_bancaria).replace(/-/g, '').substring(0, 17);
     const tipoCuenta = obtenerTipoCuentaCodigo(d.persona.tipo_cuenta);
     const monto = d.saldo_adeudado.toFixed(2);
     const tipoTrans = 'C';
