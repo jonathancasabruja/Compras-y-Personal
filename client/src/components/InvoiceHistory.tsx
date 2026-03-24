@@ -2,6 +2,7 @@
  * InvoiceHistory Component
  * ========================
  * Design: Corporate Precision - Clean table of past invoices
+ * Now shows department info
  */
 
 import { useState, useEffect } from 'react';
@@ -82,6 +83,9 @@ export default function InvoiceHistory({ onViewInvoice, refreshTrigger }: Invoic
               Empresa
             </th>
             <th className="text-left text-[11px] font-medium text-muted-foreground uppercase tracking-wider py-2.5 px-3">
+              Depto.
+            </th>
+            <th className="text-left text-[11px] font-medium text-muted-foreground uppercase tracking-wider py-2.5 px-3">
               Fecha
             </th>
             <th className="text-right text-[11px] font-medium text-muted-foreground uppercase tracking-wider py-2.5 px-3">
@@ -109,6 +113,11 @@ export default function InvoiceHistory({ onViewInvoice, refreshTrigger }: Invoic
               <td className="py-2.5 px-3">
                 <span className="text-xs text-muted-foreground">
                   {factura.empresa}
+                </span>
+              </td>
+              <td className="py-2.5 px-3">
+                <span className="text-xs text-muted-foreground">
+                  {factura.departamento || '—'}
                 </span>
               </td>
               <td className="py-2.5 px-3 text-xs text-muted-foreground font-mono-numbers">

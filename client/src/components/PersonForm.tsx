@@ -3,6 +3,7 @@
  * ====================
  * Design: Corporate Precision - Clean form with structured sections
  * For registering new persons with personal and banking data
+ * DV is optional since some documents don't have it
  */
 
 import { useState } from 'react';
@@ -44,10 +45,11 @@ export default function PersonForm({ onPersonCreated, onCancel }: PersonFormProp
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!formData.nombre_completo || !formData.cedula || !formData.dv ||
+    // DV is now optional - removed from required check
+    if (!formData.nombre_completo || !formData.cedula ||
         !formData.cuenta_bancaria || !formData.nombre_banco || !formData.tipo_cuenta ||
         !formData.titular_cuenta) {
-      toast.error('Por favor complete todos los campos');
+      toast.error('Por favor complete todos los campos obligatorios');
       return;
     }
 
@@ -56,7 +58,7 @@ export default function PersonForm({ onPersonCreated, onCancel }: PersonFormProp
       const persona = await crearPersona({
         nombre_completo: formData.nombre_completo.toUpperCase(),
         cedula: formData.cedula,
-        dv: formData.dv,
+        dv: formData.dv || '',
         cuenta_bancaria: formData.cuenta_bancaria,
         nombre_banco: formData.nombre_banco,
         tipo_cuenta: formData.tipo_cuenta as 'Ahorros' | 'Corriente',
@@ -114,7 +116,7 @@ export default function PersonForm({ onPersonCreated, onCancel }: PersonFormProp
           </div>
           <div>
             <Label htmlFor="dv" className="text-xs mb-1.5">
-              DV (Dígito Verificador)
+              DV <span className="text-muted-foreground font-normal">(opcional)</span>
             </Label>
             <Input
               id="dv"

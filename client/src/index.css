@@ -134,10 +134,15 @@
 
 /* Invoice print styles */
 @media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
   body {
     background: white !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+    margin: 0 !important;
   }
   .no-print {
     display: none !important;
@@ -149,7 +154,14 @@
     box-shadow: none !important;
     border: none !important;
     margin: 0 !important;
-    padding: 2rem !important;
+    padding: 28px 36px !important;
+    height: 100vh !important;
+    max-height: 297mm !important;
+    page-break-after: always;
+    page-break-inside: avoid;
+  }
+  .invoice-preview:last-child {
+    page-break-after: auto;
   }
 }
 

@@ -5,6 +5,19 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Department rates
+export const DEPARTAMENTOS = {
+  TAPROOM: { label: 'Taproom', tarifa: 30 },
+  COCINA: { label: 'Cocina', tarifa: 25 },
+  DISTRIBUCION: { label: 'Distribución', tarifa: 25 },
+  PRODUCCION: { label: 'Producción', tarifa: 25 },
+  EVENTO: { label: 'Evento', tarifa: 35 },
+} as const;
+
+export type DepartamentoKey = keyof typeof DEPARTAMENTOS;
+
+export const TARIFA_HORA_EXTRA = 5;
+
 // Types
 export interface Persona {
   id?: number;
@@ -26,9 +39,21 @@ export interface Factura {
   empresa: string;
   saldo_adeudado: number;
   persona_id: number;
+  departamento?: string;
+  dias_trabajados?: number;
+  tarifa_diaria?: number;
+  horas_extra?: number;
+  monto_horas_extra?: number;
   created_at?: string;
   // Joined data
   persona?: Persona;
+}
+
+// Represents one department entry in the multi-invoice form
+export interface DepartamentoEntry {
+  key: DepartamentoKey;
+  dias: number;
+  horasExtra: number;
 }
 
 // API functions
@@ -101,6 +126,16 @@ export async function crearFactura(factura: Omit<Factura, 'id' | 'created_at' | 
   return data;
 }
 
+export async function crearFacturasBatch(facturas: Omit<Factura, 'id' | 'created_at' | 'persona'>[]): Promise<Factura[]> {
+  const { data, error } = await supabase
+    .from('facturas')
+    .insert(facturas)
+    .select();
+
+  if (error) throw error;
+  return data || [];
+}
+
 export async function obtenerFacturas(): Promise<Factura[]> {
   const { data, error } = await supabase
     .from('facturas')
@@ -130,4 +165,12 @@ export async function obtenerTodasPersonas(): Promise<Persona[]> {
 
   if (error) throw error;
   return data || [];
+}
+
+// Calculate total for a department entry
+export function calcularTotalDepartamento(entry: DepartamentoEntry): number {
+  const tarifa = DEPARTAMENTOS[entry.key].tarifa;
+  const montoDias = entry.dias * tarifa;
+  const montoExtras = entry.horasExtra * TARIFA_HORA_EXTRA;
+  return montoDias + montoExtras;
 }
