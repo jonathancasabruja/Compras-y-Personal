@@ -409,7 +409,7 @@ export default function Home() {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;">
         <div>
           <h2 style="font-size:14px;font-weight:700;letter-spacing:0.02em;color:#111;text-transform:uppercase;margin:0;">${persona.nombre_completo}</h2>
-          <p style="font-size:12px;color:#666;font-family:'JetBrains Mono',monospace;margin:2px 0 0 0;">${persona.cedula}${persona.dv ? ` DV${persona.dv}` : ''}</p>
+          <p style="font-size:12px;color:#666;font-family:'JetBrains Mono',monospace;margin:2px 0 0 0;">${persona.cedula}${persona.dv && persona.dv.trim() ? ` DV${persona.dv.trim()}` : ''}</p>
         </div>
         <div style="text-align:right;">
           <h1 style="font-size:32px;font-weight:300;letter-spacing:0.15em;color:#aaa;line-height:1;margin:0;">FACTURA</h1>

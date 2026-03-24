@@ -53,7 +53,7 @@ export default function InvoicePreview({ draft, id }: Props) {
             {persona.nombre_completo}
           </h2>
           <p style={{ fontSize: '12px', color: '#666666', fontFamily: "'JetBrains Mono', monospace", margin: '2px 0 0 0' }}>
-            {persona.cedula}{persona.dv ? ` DV${persona.dv}` : ''}
+            {persona.cedula}{persona.dv && persona.dv.trim() ? ` DV${persona.dv.trim()}` : ''}
           </p>
         </div>
         <div style={{ textAlign: 'right' }}>
