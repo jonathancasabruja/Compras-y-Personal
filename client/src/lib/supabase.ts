@@ -367,21 +367,31 @@ export function obtenerTipoCuentaCodigo(tipoCuenta: string): string {
   return '04'; // Default to savings
 }
 
-/** Generate CSV content in ACH bank transfer format */
+/** Sanitize text for ACH format: remove tildes, ñ, and invalid characters */
+function sanitizeACH(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove diacritics (tildes)
+    .replace(/ñ/g, 'n')
+    .replace(/Ñ/g, 'N')
+    .replace(/[\[\]().]/g, '') // Remove brackets, parentheses, dots
+    .toUpperCase();
+}
+
+/** Generate CSV content in ACH bank transfer format (semicolon separated, no header) */
 export function generarCSVBancario(drafts: InvoiceDraft[]): string {
-  const header = 'ID BENEFICIARIO,NOMBRE BENEFICIARIO,RUTA BANCO,CUENTA BANCO,TIPO CUENTA,MONTO,TIPO TRANS.,ADENDA';
   const rows = drafts.map((d) => {
-    const cedula = d.persona.cedula;
-    const titular = d.persona.titular_cuenta || d.persona.nombre_completo;
+    const cedula = sanitizeACH(d.persona.cedula).substring(0, 15);
+    const titular = sanitizeACH(d.persona.titular_cuenta || d.persona.nombre_completo).substring(0, 22);
     const rutaBanco = obtenerRutaBanco(d.persona.nombre_banco);
-    const cuenta = d.persona.cuenta_bancaria;
+    const cuenta = sanitizeACH(d.persona.cuenta_bancaria).substring(0, 17);
     const tipoCuenta = obtenerTipoCuentaCodigo(d.persona.tipo_cuenta);
     const monto = d.saldo_adeudado.toFixed(2);
     const tipoTrans = 'C';
-    const adenda = `REF*TXT**Factura N-${d.numero_factura}\\`;
-    return `${cedula},${titular},${rutaBanco},${cuenta},${tipoCuenta},${monto},${tipoTrans},${adenda}`;
+    const adenda = `REF*TXT**FACTURA N-${d.numero_factura}\\`;
+    return `${cedula};${titular};${rutaBanco};${cuenta};${tipoCuenta};${monto};${tipoTrans};${adenda}`;
   });
-  return [header, ...rows].join('\n');
+  return rows.join('\n');
 }
 
 /** Download CSV as file */

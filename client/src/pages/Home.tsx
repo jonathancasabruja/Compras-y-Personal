@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import PersonSearch from '@/components/PersonSearch';
@@ -660,16 +661,15 @@ export default function Home() {
                       </div>
                       <div>
                         <Label className="text-xs mb-1.5">Empresa</Label>
-                        <select
-                          value={sharedEmpresa}
-                          onChange={(e) => setSharedEmpresa(e.target.value)}
-                          className="w-full h-10 text-sm bg-white border rounded-md px-3"
-                          style={{ borderColor: '#e5e7eb' }}
-                        >
-                          <option value="">Seleccionar...</option>
-                          <option value="CASA BRUJA, S.A.">Casa Bruja, S.A.</option>
-                          <option value="LOST ORIGIN, S.A.">Lost Origin, S.A.</option>
-                        </select>
+                        <Select value={sharedEmpresa} onValueChange={setSharedEmpresa}>
+                          <SelectTrigger className="h-10 text-sm bg-white">
+                            <SelectValue placeholder="Seleccionar..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="CASA BRUJA, S.A.">Casa Bruja, S.A.</SelectItem>
+                            <SelectItem value="LOST ORIGIN, S.A.">Lost Origin, S.A.</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                   </Card>
