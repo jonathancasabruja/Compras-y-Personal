@@ -387,9 +387,9 @@ export function generarTXTBancario(drafts: InvoiceDraft[]): string {
     const cuenta = sanitizeACH(d.persona.cuenta_bancaria).replace(/-/g, '').substring(0, 17);
     const tipoCuenta = obtenerTipoCuentaCodigo(d.persona.tipo_cuenta);
     const monto = d.saldo_adeudado.toFixed(2);
-    const tipoTrans = 'C';
+    const tipoTrans = 'D';
     const adenda = `REF*TXT**FACTURA N-${d.numero_factura}\\`;
-    return `${cedula};${titular};${rutaBanco};${cuenta};${tipoCuenta};${monto};${tipoTrans};${adenda}`;
+    return `${cedula},${titular},${rutaBanco},${cuenta},${tipoCuenta},${monto},${tipoTrans},${adenda}`;
   });
   return rows.join('\n');
 }
