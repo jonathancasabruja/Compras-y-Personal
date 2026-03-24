@@ -26,8 +26,8 @@ import {
   obtenerTarifas,
   crearLote,
   guardarFacturasBatch,
-  generarCSVBancario,
-  descargarCSV,
+  generarTXTBancario,
+  descargarTXT,
   type Persona,
   type InvoiceDraft,
   type TarifaDepartamento,
@@ -321,13 +321,13 @@ export default function Home() {
     handlePrint();
   };
 
-  // ─── CSV ACH Download ─────────────────────────────
-  const handleDownloadCSV = (drafts: InvoiceDraft[], filename?: string) => {
+  // ─── TXT ACH Download ─────────────────────────────
+  const handleDownloadTXT = (drafts: InvoiceDraft[], filename?: string) => {
     if (drafts.length === 0) return;
-    const csv = generarCSVBancario(drafts);
-    const name = filename || `ACH_${batchName.replace(/\s+/g, '_') || 'Lote'}_${sharedFecha}.csv`;
-    descargarCSV(csv, name);
-    toast.success(`Archivo CSV descargado: ${name}`);
+    const txt = generarTXTBancario(drafts);
+    const name = filename || `ACH_${batchName.replace(/\s+/g, '_') || 'Lote'}_${sharedFecha}.txt`;
+    descargarTXT(txt, name);
+    toast.success(`Archivo TXT descargado: ${name}`);
   };
 
   // ─── History handlers ──────────────────────────────
@@ -553,8 +553,8 @@ export default function Home() {
                 <Button variant="outline" size="sm" onClick={handleExportPDF} className="h-8 text-xs gap-1.5">
                   <Download className="w-3.5 h-3.5" /> PDF
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleDownloadCSV(previewDrafts)} className="h-8 text-xs gap-1.5" style={{ color: '#16a34a', borderColor: '#bbf7d0' }}>
-                  <FileSpreadsheet className="w-3.5 h-3.5" /> CSV ACH
+                <Button variant="outline" size="sm" onClick={() => handleDownloadTXT(previewDrafts)} className="h-8 text-xs gap-1.5" style={{ color: '#16a34a', borderColor: '#bbf7d0' }}>
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> TXT ACH
                 </Button>
               </div>
             </div>
@@ -612,8 +612,8 @@ export default function Home() {
                 <Button variant="outline" size="sm" onClick={handleExportPDF} className="h-8 text-xs gap-1.5">
                   <Download className="w-3.5 h-3.5" /> PDF
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleDownloadCSV([viewingDraft])} className="h-8 text-xs gap-1.5" style={{ color: '#16a34a', borderColor: '#bbf7d0' }}>
-                  <FileSpreadsheet className="w-3.5 h-3.5" /> CSV ACH
+                <Button variant="outline" size="sm" onClick={() => handleDownloadTXT([viewingDraft])} className="h-8 text-xs gap-1.5" style={{ color: '#16a34a', borderColor: '#bbf7d0' }}>
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> TXT ACH
                 </Button>
               </div>
             </div>
@@ -816,7 +816,7 @@ export default function Home() {
                 <InvoiceHistory
                   onViewInvoice={handleViewHistoryInvoice}
                   onPrintBatch={handlePrintBatch}
-                  onDownloadCSV={handleDownloadCSV}
+                  onDownloadCSV={handleDownloadTXT}
                   refreshKey={refreshKey}
                 />
               </Card>

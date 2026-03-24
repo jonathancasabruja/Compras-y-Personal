@@ -115,7 +115,7 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
     const facturas = loteFacturas[loteId];
     if (!facturas || !onDownloadCSV) return;
     const drafts = facturas.map(facturaToDraft);
-    onDownloadCSV(drafts, `ACH_${loteNombre.replace(/\s+/g, '_')}.csv`);
+    onDownloadCSV(drafts, `ACH_${loteNombre.replace(/\s+/g, '_')}.txt`);
   }
 
   if (loading) {
@@ -264,7 +264,7 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
                           onClick={() => lote.id && handleDownloadCSVLote(lote.id, lote.nombre)}
                         >
                           <FileSpreadsheet className="w-3.5 h-3.5" />
-                          CSV ACH
+                          TXT ACH
                         </Button>
                       )}
                     </div>

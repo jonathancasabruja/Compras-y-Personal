@@ -378,8 +378,8 @@ function sanitizeACH(text: string): string {
     .toUpperCase();
 }
 
-/** Generate CSV content in ACH bank transfer format (semicolon separated, no header) */
-export function generarCSVBancario(drafts: InvoiceDraft[]): string {
+/** Generate TXT content in ACH bank transfer format (semicolon separated, no header) */
+export function generarTXTBancario(drafts: InvoiceDraft[]): string {
   const rows = drafts.map((d) => {
     const cedula = sanitizeACH(d.persona.cedula).substring(0, 15);
     const titular = sanitizeACH(d.persona.titular_cuenta || d.persona.nombre_completo).substring(0, 22);
@@ -394,9 +394,9 @@ export function generarCSVBancario(drafts: InvoiceDraft[]): string {
   return rows.join('\n');
 }
 
-/** Download CSV as file */
-export function descargarCSV(contenido: string, nombreArchivo: string): void {
-  const blob = new Blob([contenido], { type: 'text/csv;charset=utf-8;' });
+/** Download TXT as file */
+export function descargarTXT(contenido: string, nombreArchivo: string): void {
+  const blob = new Blob([contenido], { type: 'text/plain;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
