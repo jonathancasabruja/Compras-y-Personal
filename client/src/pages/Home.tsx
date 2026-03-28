@@ -1,12 +1,11 @@
 /**
  * Home Page — Invoice Generation System
  * ======================================
- * Flow:
- *  1. User adds one or more persons to the batch
- *  2. For each person: select departments, days, hours → single invoice per person
- *  3. Invoice number is per-person consecutive (editable)
- *  4. Personalized rates per person per department
- *  5. Name the batch, preview all, save all, print all
+ * Tabs:
+ *  1. Crear Lote — Manual batch creation (search/add persons one by one)
+ *  2. Pagos Colaboradores — Auto-loads active collaborators for batch payment
+ *  3. Colaboradores — Manage active/inactive collaborators
+ *  4. Historial — View saved batches and invoices
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -22,6 +21,8 @@ import InvoiceForm, { type InvoiceFormData } from '@/components/InvoiceForm';
 import InvoicePreview from '@/components/InvoicePreview';
 import InvoiceHistory from '@/components/InvoiceHistory';
 import TarifasConfig from '@/components/TarifasConfig';
+import ColaboradoresManager from '@/components/ColaboradoresManager';
+import PagosColaboradores from '@/components/PagosColaboradores';
 import {
   obtenerTarifas,
   crearLote,
@@ -46,6 +47,8 @@ import {
   UserPlus,
   Package,
   FileSpreadsheet,
+  Users,
+  CreditCard,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -64,6 +67,7 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>('create');
   const [activeTab, setActiveTab] = useState('create');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [colabRefreshKey, setColabRefreshKey] = useState(0);
 
   // ─── Batch creation state ──────────────────────────
   const [batchEntries, setBatchEntries] = useState<BatchEntry[]>([]);
@@ -77,6 +81,7 @@ export default function Home() {
 
   // ─── Preview state ─────────────────────────────────
   const [previewDrafts, setPreviewDrafts] = useState<InvoiceDraft[]>([]);
+  const [previewBatchName, setPreviewBatchName] = useState('');
   const [currentPreviewIdx, setCurrentPreviewIdx] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
@@ -84,7 +89,7 @@ export default function Home() {
   // ─── History view state ────────────────────────────
   const [viewingDraft, setViewingDraft] = useState<InvoiceDraft | null>(null);
 
-  // ─── Shared date/empresa for the batch ─────────────
+  // ─── Shared date/empresa for the manual batch ──────
   const [sharedFecha, setSharedFecha] = useState(new Date().toISOString().split('T')[0]);
   const [sharedEmpresa, setSharedEmpresa] = useState('');
 
@@ -117,7 +122,6 @@ export default function Home() {
   const handlePersonSelected = (persona: Persona) => {
     setSelectedPersona(persona);
     setShowNewPersonForm(false);
-    // Reset form data so InvoiceForm can load per-person data
     setCurrentFormData(emptyFormData());
   };
 
@@ -152,7 +156,6 @@ export default function Home() {
       return;
     }
 
-    // Check if person already in batch (except when editing)
     const alreadyExists = batchEntries.some(
       (e, idx) => e.persona.id === selectedPersona.id && idx !== currentEditIndex
     );
@@ -161,7 +164,6 @@ export default function Home() {
       return;
     }
 
-    // Check if invoice number already used in batch
     const numUsed = batchEntries.some(
       (e, idx) => e.formData.numeroFactura === currentFormData.numeroFactura && idx !== currentEditIndex
     );
@@ -182,7 +184,6 @@ export default function Home() {
       setBatchEntries((prev) => [...prev, entry]);
     }
 
-    // Reset for next person
     setSelectedPersona(null);
     setShowNewPersonForm(false);
     setCurrentFormData(emptyFormData());
@@ -200,7 +201,7 @@ export default function Home() {
     setCurrentEditIndex(idx);
   };
 
-  // ─── Generate all invoices (preview) ───────────────
+  // ─── Generate all invoices (preview) — manual batch ─
   const handleGenerateAll = () => {
     if (batchEntries.length === 0) {
       toast.error('Agregue al menos una persona al lote');
@@ -215,7 +216,6 @@ export default function Home() {
       return;
     }
 
-    // Build drafts using each entry's own invoice number
     const drafts: InvoiceDraft[] = batchEntries.map((entry) => ({
       persona: entry.persona,
       departamentos: entry.formData.departamentos,
@@ -226,6 +226,18 @@ export default function Home() {
     }));
 
     setPreviewDrafts(drafts);
+    setPreviewBatchName(batchName);
+    setCurrentPreviewIdx(0);
+    setIsSaved(false);
+    setViewMode('preview');
+  };
+
+  // ─── Generate invoices from PagosColaboradores ─────
+  const handlePagosGenerate = (drafts: InvoiceDraft[], pagoBatchName: string, empresa: string) => {
+    setPreviewDrafts(drafts);
+    setPreviewBatchName(pagoBatchName);
+    setSharedEmpresa(empresa);
+    setSharedFecha(drafts[0]?.fecha || new Date().toISOString().split('T')[0]);
     setCurrentPreviewIdx(0);
     setIsSaved(false);
     setViewMode('preview');
@@ -238,8 +250,8 @@ export default function Home() {
     try {
       const totalMonto = previewDrafts.reduce((s, d) => s + d.saldo_adeudado, 0);
       const lote = await crearLote({
-        nombre: batchName.trim(),
-        fecha: sharedFecha,
+        nombre: previewBatchName.trim(),
+        fecha: previewDrafts[0]?.fecha || sharedFecha,
         total_facturas: previewDrafts.length,
         monto_total: totalMonto,
       });
@@ -272,7 +284,7 @@ export default function Home() {
       });
 
       await guardarFacturasBatch(facturas);
-      toast.success(`Lote "${batchName}" guardado con ${previewDrafts.length} factura(s)`);
+      toast.success(`Lote "${previewBatchName}" guardado con ${previewDrafts.length} factura(s)`);
       setIsSaved(true);
       setRefreshKey((k) => k + 1);
     } catch (err: any) {
@@ -311,7 +323,7 @@ export default function Home() {
 
   const handlePrint = () => {
     if (viewMode === 'preview' && previewDrafts.length > 0) {
-      openPrintWindow(previewDrafts, `Lote_${batchName}`);
+      openPrintWindow(previewDrafts, `Lote_${previewBatchName}`);
     } else if (viewMode === 'history-view' && viewingDraft) {
       openPrintWindow([viewingDraft], `Factura_${viewingDraft.numero_factura}`);
     }
@@ -325,7 +337,7 @@ export default function Home() {
   const handleDownloadTXT = (drafts: InvoiceDraft[], filename?: string) => {
     if (drafts.length === 0) return;
     const txt = generarTXTBancario(drafts);
-    const name = filename || `ACH_${batchName.replace(/\s+/g, '_') || 'Lote'}_${sharedFecha}.txt`;
+    const name = filename || `ACH_${previewBatchName.replace(/\s+/g, '_') || 'Lote'}_${sharedFecha}.txt`;
     descargarTXT(txt, name);
     toast.success(`Archivo TXT descargado: ${name}`);
   };
@@ -346,6 +358,7 @@ export default function Home() {
     setViewMode('create');
     setBatchEntries([]);
     setBatchName('');
+    setPreviewBatchName('');
     setSelectedPersona(null);
     setShowNewPersonForm(false);
     setCurrentFormData(emptyFormData());
@@ -548,7 +561,7 @@ export default function Home() {
                   </span>
                 )}
                 <Button variant="outline" size="sm" onClick={handlePrint} className="h-8 text-xs gap-1.5">
-                  <Printer className="w-3.5 h-3.5" /> Imprimir Todas
+                  <Printer className="w-3.5 h-3.5" /> Imprimir
                 </Button>
                 <Button variant="outline" size="sm" onClick={handleExportPDF} className="h-8 text-xs gap-1.5">
                   <Download className="w-3.5 h-3.5" /> PDF
@@ -566,7 +579,7 @@ export default function Home() {
               <div className="no-print mt-6">
                 <Card className="p-4">
                   <h3 className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: '#9ca3af' }}>
-                    Resumen del Lote: {batchName}
+                    Resumen del Lote: {previewBatchName}
                   </h3>
                   <div className="space-y-2">
                     {previewDrafts.map((d, idx) => (
@@ -589,9 +602,13 @@ export default function Home() {
                     ))}
                   </div>
                   <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: '1px solid #e5e7eb' }}>
-                    <span className="text-xs font-medium" style={{ color: '#6b7280' }}>Total General</span>
+                    <div className="flex items-center gap-4">
+                      <span className="text-xs font-medium" style={{ color: '#6b7280' }}>
+                        {previewDrafts.length} factura{previewDrafts.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
                     <span className="text-sm font-bold font-mono" style={{ color: '#1B4965' }}>
-                      ${previewDrafts.reduce((s, d) => s + d.saldo_adeudado, 0).toFixed(2)}
+                      Total: ${previewDrafts.reduce((s, d) => s + d.saldo_adeudado, 0).toFixed(2)}
                     </span>
                   </div>
                 </Card>
@@ -620,17 +637,24 @@ export default function Home() {
             <InvoicePreview draft={viewingDraft} id="invoice-content" />
           </div>
         ) : (
-          /* ═══ CREATE MODE ═══ */
+          /* ═══ CREATE MODE — TABS ═══ */
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="no-print mb-5 bg-white border" style={{ borderColor: '#e5e7eb' }}>
               <TabsTrigger value="create" className="text-xs gap-1.5 data-[state=active]:text-white" style={{ '--tw-bg-opacity': '1' } as any}>
                 <Plus className="w-3.5 h-3.5" /> Crear Lote
+              </TabsTrigger>
+              <TabsTrigger value="pagos" className="text-xs gap-1.5">
+                <CreditCard className="w-3.5 h-3.5" /> Pagos
+              </TabsTrigger>
+              <TabsTrigger value="colaboradores" className="text-xs gap-1.5">
+                <Users className="w-3.5 h-3.5" /> Colaboradores
               </TabsTrigger>
               <TabsTrigger value="history" className="text-xs gap-1.5">
                 <History className="w-3.5 h-3.5" /> Historial
               </TabsTrigger>
             </TabsList>
 
+            {/* ── TAB: Crear Lote (manual) ── */}
             <TabsContent value="create">
               <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
                 {/* Left: Form (3 cols) */}
@@ -666,8 +690,8 @@ export default function Home() {
                             <SelectValue placeholder="Seleccionar..." />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="CASA BRUJA, S.A.">Casa Bruja, S.A.</SelectItem>
-                            <SelectItem value="LOST ORIGIN, S.A.">Lost Origin, S.A.</SelectItem>
+                            <SelectItem value="Casa Bruja, S.A.">Casa Bruja, S.A.</SelectItem>
+                            <SelectItem value="Lost Origin, S.A.">Lost Origin, S.A.</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -793,12 +817,19 @@ export default function Home() {
                             );
                           })}
 
-                          {/* Total */}
-                          <div className="flex items-center justify-between pt-3 mt-2" style={{ borderTop: '1px solid #e5e7eb' }}>
-                            <span className="text-xs font-medium" style={{ color: '#6b7280' }}>Total del Lote</span>
-                            <span className="text-base font-bold font-mono" style={{ color: '#1B4965' }}>
-                              ${batchTotal.toFixed(2)}
-                            </span>
+                          {/* Total with invoice count */}
+                          <div className="pt-3 mt-2" style={{ borderTop: '1px solid #e5e7eb' }}>
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <span className="text-xs font-medium" style={{ color: '#6b7280' }}>Total del Lote</span>
+                                <span className="text-xs ml-2 px-1.5 py-0.5 rounded" style={{ backgroundColor: '#dbeafe', color: '#1e40af' }}>
+                                  {batchEntries.length} factura{batchEntries.length !== 1 ? 's' : ''}
+                                </span>
+                              </div>
+                              <span className="text-base font-bold font-mono" style={{ color: '#1B4965' }}>
+                                ${batchTotal.toFixed(2)}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -808,6 +839,29 @@ export default function Home() {
               </div>
             </TabsContent>
 
+            {/* ── TAB: Pagos Colaboradores ── */}
+            <TabsContent value="pagos">
+              <Card className="p-5">
+                <PagosColaboradores
+                  onGenerateInvoices={handlePagosGenerate}
+                  refreshKey={colabRefreshKey}
+                />
+              </Card>
+            </TabsContent>
+
+            {/* ── TAB: Colaboradores ── */}
+            <TabsContent value="colaboradores">
+              <Card className="p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold" style={{ color: '#111827' }}>Gestión de Colaboradores</h2>
+                </div>
+                <ColaboradoresManager
+                  onColaboradoresChanged={() => setColabRefreshKey((k) => k + 1)}
+                />
+              </Card>
+            </TabsContent>
+
+            {/* ── TAB: Historial ── */}
             <TabsContent value="history">
               <Card className="p-5">
                 <div className="flex items-center justify-between mb-4">

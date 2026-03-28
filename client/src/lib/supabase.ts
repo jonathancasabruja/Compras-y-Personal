@@ -28,6 +28,8 @@ export interface Persona {
   nombre_banco: string;
   tipo_cuenta: string;
   titular_cuenta: string;
+  activo?: boolean;
+  departamento_principal?: string;
 }
 
 export interface TarifaDepartamento {
@@ -171,6 +173,50 @@ export async function eliminarTarifaPersona(
 }
 
 // ─── Personas ────────────────────────────────────────────
+
+export async function obtenerColaboradoresActivos(): Promise<Persona[]> {
+  const { data, error } = await supabase
+    .from('personas')
+    .select('*')
+    .eq('activo', true)
+    .order('nombre_completo');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function obtenerTodosColaboradores(): Promise<Persona[]> {
+  const { data, error } = await supabase
+    .from('personas')
+    .select('*')
+    .order('activo', { ascending: false })
+    .order('nombre_completo');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function toggleColaboradorActivo(personaId: number, activo: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('personas')
+    .update({ activo })
+    .eq('id', personaId);
+  if (error) throw error;
+}
+
+export async function actualizarDepartamentoPrincipal(personaId: number, departamento: string): Promise<void> {
+  const { error } = await supabase
+    .from('personas')
+    .update({ departamento_principal: departamento })
+    .eq('id', personaId);
+  if (error) throw error;
+}
+
+export async function actualizarPersona(personaId: number, data: Partial<Persona>): Promise<void> {
+  const { error } = await supabase
+    .from('personas')
+    .update(data)
+    .eq('id', personaId);
+  if (error) throw error;
+}
 
 export async function buscarPersonas(query: string): Promise<Persona[]> {
   const q = query.trim();
