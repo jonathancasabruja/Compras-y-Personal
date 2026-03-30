@@ -16,6 +16,7 @@ import {
   obtenerTarifas,
   obtenerTarifasPersona,
   obtenerUltimaFacturaPersona,
+  verificarFacturaDuplicada,
   type Persona,
   type TarifaDepartamento,
   type TarifaPersona,
@@ -46,6 +47,7 @@ interface ColabPaymentRow {
   }[];
   numeroFactura: number;
   total: number;
+  facturaWarning?: string;
 }
 
 interface Props {
@@ -317,9 +319,66 @@ export default function PagosColaboradores({ onGenerateInvoices, refreshKey }: P
                   <p className="text-sm font-semibold truncate" style={{ color: '#111827' }}>
                     {row.persona.nombre_completo}
                   </p>
-                  <p className="text-[11px] font-mono" style={{ color: '#6b7280' }}>
-                    {row.persona.cedula} · Fact #{row.numeroFactura}
-                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-mono" style={{ color: '#6b7280' }}>
+                      {row.persona.cedula} · Fact #
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={row.numeroFactura}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || 1;
+                        updateRow(rowIdx, (r) => ({ ...r, numeroFactura: val, facturaWarning: undefined }));
+                      }}
+                      onBlur={async () => {
+                        if (!row.persona.id) return;
+                        const result = await verificarFacturaDuplicada(row.persona.id, row.numeroFactura);
+                        if (result.existe) {
+                          updateRow(rowIdx, (r) => ({
+                            ...r,
+                            facturaWarning: `Ya existe #${row.numeroFactura}. Siguiente disponible: #${result.siguiente}`,
+                          }));
+                          toast.warning(
+                            `${row.persona.nombre_completo}: Factura #${row.numeroFactura} ya existe. Sugerido: #${result.siguiente}`,
+                            { duration: 5000 }
+                          );
+                        } else {
+                          updateRow(rowIdx, (r) => ({ ...r, facturaWarning: undefined }));
+                        }
+                      }}
+                      className="w-14 h-5 text-[11px] font-mono text-center border rounded px-1"
+                      style={{
+                        color: row.facturaWarning ? '#dc2626' : '#6b7280',
+                        borderColor: row.facturaWarning ? '#fca5a5' : '#d1d5db',
+                        backgroundColor: row.facturaWarning ? '#fef2f2' : '#fff',
+                        outline: 'none',
+                      }}
+                    />
+                    {row.facturaWarning && (
+                      <button
+                        className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                        style={{ backgroundColor: '#dbeafe', color: '#1e40af' }}
+                        title="Usar número sugerido"
+                        onClick={async () => {
+                          if (!row.persona.id) return;
+                          const result = await verificarFacturaDuplicada(row.persona.id, row.numeroFactura);
+                          updateRow(rowIdx, (r) => ({
+                            ...r,
+                            numeroFactura: result.siguiente,
+                            facturaWarning: undefined,
+                          }));
+                        }}
+                      >
+                        Usar #{row.facturaWarning.match(/#(\d+)$/)?.[1]}
+                      </button>
+                    )}
+                  </div>
+                  {row.facturaWarning && (
+                    <p className="text-[10px]" style={{ color: '#dc2626' }}>
+                      {row.facturaWarning}
+                    </p>
+                  )}
                 </div>
                 {row.total > 0 && (
                   <div className="flex items-center gap-1.5 flex-shrink-0">

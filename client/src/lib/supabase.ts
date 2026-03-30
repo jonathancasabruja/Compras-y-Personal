@@ -330,36 +330,53 @@ export async function guardarFacturasBatch(
     detalle_departamentos: DeptLineItem[];
     lote_id: number;
   }>
-): Promise<{ duplicados: number[] }> {
-  // Check for existing invoice numbers (non-blocking warning)
-  const nums = facturas.map(f => f.numero_factura);
-  const { data: existing } = await supabase
-    .from('facturas')
-    .select('numero_factura')
-    .in('numero_factura', nums);
-  const duplicados = existing ? existing.map(e => e.numero_factura) : [];
-
-  // Insert all facturas regardless of duplicates (DB may have unique constraint)
-  // Use upsert with ignoreDuplicates to skip conflicts silently
+): Promise<{ duplicados: string[] }> {
+  // Try batch insert first
   const { error } = await supabase.from('facturas').insert(facturas);
   if (error) {
-    // If it's a unique constraint error, try inserting one by one skipping duplicates
+    // If unique constraint error (persona_id + numero_factura), insert one by one
     if (error.message?.includes('duplicate') || error.code === '23505') {
-      let insertedCount = 0;
-      const failedNums: number[] = [];
+      const failed: string[] = [];
       for (const f of facturas) {
         const { error: singleErr } = await supabase.from('facturas').insert(f);
         if (singleErr) {
-          failedNums.push(f.numero_factura);
-        } else {
-          insertedCount++;
+          // Find persona name for better message
+          const { data: p } = await supabase.from('personas').select('nombre_completo').eq('id', f.persona_id).single();
+          const nombre = p?.nombre_completo || `ID ${f.persona_id}`;
+          failed.push(`#${f.numero_factura} (${nombre})`);
         }
       }
-      return { duplicados: failedNums };
+      return { duplicados: failed };
     }
     throw error;
   }
-  return { duplicados };
+  return { duplicados: [] };
+}
+
+/**
+ * Check if a specific invoice number already exists for a given persona.
+ * Returns the next available number if duplicate found.
+ */
+export async function verificarFacturaDuplicada(
+  personaId: number,
+  numeroFactura: number
+): Promise<{ existe: boolean; siguiente: number }> {
+  const { data } = await supabase
+    .from('facturas')
+    .select('numero_factura')
+    .eq('persona_id', personaId)
+    .eq('numero_factura', numeroFactura);
+  const existe = (data && data.length > 0) || false;
+
+  // Get the max invoice number for this persona to suggest next
+  const { data: maxData } = await supabase
+    .from('facturas')
+    .select('numero_factura')
+    .eq('persona_id', personaId)
+    .order('numero_factura', { ascending: false })
+    .limit(1);
+  const maxNum = maxData && maxData.length > 0 ? maxData[0].numero_factura : 0;
+  return { existe, siguiente: maxNum + 1 };
 }
 
 export async function obtenerFacturas(): Promise<Factura[]> {

@@ -281,10 +281,10 @@ export default function Home() {
       const result = await guardarFacturasBatch(facturas);
       
       if (result.duplicados.length > 0) {
-        const nums = result.duplicados.join(', ');
+        const lista = result.duplicados.join(', ');
         toast.warning(
-          `Lote guardado. Nota: las facturas #${nums} ya existían y fueron omitidas.`,
-          { duration: 6000 }
+          `Lote guardado. Facturas omitidas (ya existían): ${lista}`,
+          { duration: 8000 }
         );
       } else {
         toast.success(`Lote "${previewBatchName}" guardado con ${previewDrafts.length} factura(s)`);
