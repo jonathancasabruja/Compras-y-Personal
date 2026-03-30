@@ -29,6 +29,7 @@ import {
   guardarFacturasBatch,
   generarTXTBancario,
   descargarTXT,
+  generarExcelLote,
   type Persona,
   type InvoiceDraft,
   type TarifaDepartamento,
@@ -293,8 +294,77 @@ export default function Home() {
   };
 
   // ─── Print / PDF ───────────────────────────────────
+  function renderSummaryPage(drafts: InvoiceDraft[], batchName: string): string {
+    const totalMonto = drafts.reduce((s, d) => s + d.saldo_adeudado, 0);
+    const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fecha = drafts[0]?.fecha || '';
+    const parts = fecha.split('-');
+    const fechaFmt = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : fecha;
+    const empresa = drafts[0]?.empresa || '';
+
+    const rowsHtml = drafts.map((d, idx) => {
+      const deptNames = d.departamentos.map((dep) => dep.departamento).join(', ');
+      return `<tr style="border-bottom:1px solid #f0f0f0;">
+        <td style="padding:8px 12px;font-size:12px;color:#444;text-align:center;font-family:'JetBrains Mono',monospace;">${idx + 1}</td>
+        <td style="padding:8px 12px;font-size:12px;color:#222;font-weight:500;">${d.persona.nombre_completo}</td>
+        <td style="padding:8px 12px;font-size:12px;color:#444;text-align:center;font-family:'JetBrains Mono',monospace;">#${d.numero_factura}</td>
+        <td style="padding:8px 12px;font-size:11px;color:#666;">${deptNames}</td>
+        <td style="padding:8px 12px;text-align:right;font-size:12px;color:#222;font-weight:600;font-family:'JetBrains Mono',monospace;">USD ${fmt(d.saldo_adeudado)}</td>
+      </tr>`;
+    }).join('');
+
+    return `<div style="font-family:'DM Sans',system-ui,sans-serif;padding:36px 40px;height:297mm;box-sizing:border-box;background:#fff;color:#1a1a1a;width:210mm;margin:0 auto;display:flex;flex-direction:column;page-break-after:always;">
+      <div style="text-align:center;margin-bottom:36px;">
+        <h1 style="font-size:28px;font-weight:300;letter-spacing:0.12em;color:#aaa;margin:0 0 8px 0;">RESUMEN DE LOTE</h1>
+        <h2 style="font-size:18px;font-weight:700;color:#111;margin:0;">${batchName}</h2>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-bottom:28px;padding:16px 20px;background:#f9fafb;border-radius:8px;">
+        <div>
+          <p style="font-size:11px;color:#888;margin:0 0 4px 0;">Empresa</p>
+          <p style="font-size:14px;font-weight:700;color:#111;margin:0;">${empresa}</p>
+        </div>
+        <div style="text-align:center;">
+          <p style="font-size:11px;color:#888;margin:0 0 4px 0;">Fecha</p>
+          <p style="font-size:14px;font-weight:600;color:#333;margin:0;font-family:'JetBrains Mono',monospace;">${fechaFmt}</p>
+        </div>
+        <div style="text-align:center;">
+          <p style="font-size:11px;color:#888;margin:0 0 4px 0;">Transacciones</p>
+          <p style="font-size:22px;font-weight:700;color:#1B4965;margin:0;font-family:'JetBrains Mono',monospace;">${drafts.length}</p>
+        </div>
+        <div style="text-align:right;">
+          <p style="font-size:11px;color:#888;margin:0 0 4px 0;">Monto Total</p>
+          <p style="font-size:22px;font-weight:700;color:#1B4965;margin:0;font-family:'JetBrains Mono',monospace;">USD ${fmt(totalMonto)}</p>
+        </div>
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="background:#333;">
+          <th style="text-align:center;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:6%;">No.</th>
+          <th style="text-align:left;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:30%;">Nombre</th>
+          <th style="text-align:center;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:12%;">Factura</th>
+          <th style="text-align:left;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:30%;">Departamento</th>
+          <th style="text-align:right;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:22%;">Monto</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot><tr style="background:#f3f3f3;">
+          <td colspan="4" style="padding:10px 12px;font-size:12px;font-weight:700;color:#111;text-align:right;">TOTAL:</td>
+          <td style="padding:10px 12px;text-align:right;font-size:14px;font-weight:700;color:#1B4965;font-family:'JetBrains Mono',monospace;">USD ${fmt(totalMonto)}</td>
+        </tr></tfoot>
+      </table>
+
+      <div style="flex:1;"></div>
+      <div style="border-top:1px solid #e5e5e5;padding-top:12px;text-align:center;">
+        <p style="font-size:10px;color:#aaa;">Generado por Sistema de Facturación — Personal Eventual</p>
+      </div>
+    </div>`;
+  }
+
   function openPrintWindow(drafts: InvoiceDraft[], title: string) {
-    const allHtml = drafts.map((d) => renderInvoiceHTML(d)).join('');
+    const batchName = previewBatchName || title;
+    // Build summary page only when there are multiple invoices
+    const summaryHtml = drafts.length > 1 ? renderSummaryPage(drafts, batchName) : '';
+    const allHtml = summaryHtml + drafts.map((d) => renderInvoiceHTML(d)).join('');
     const printWindow = window.open('', '_blank', 'width=800,height=1100');
     if (!printWindow) {
       toast.error('Habilite las ventanas emergentes para imprimir');
@@ -554,6 +624,9 @@ export default function Home() {
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownloadTXT(previewDrafts)} className="h-8 text-xs gap-1.5" style={{ color: '#16a34a', borderColor: '#bbf7d0' }}>
                   <FileSpreadsheet className="w-3.5 h-3.5" /> TXT ACH
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => generarExcelLote(previewDrafts, previewBatchName, sharedFecha)} className="h-8 text-xs gap-1.5" style={{ color: '#1B4965', borderColor: '#bfdbfe' }}>
+                  <Download className="w-3.5 h-3.5" /> Excel
                 </Button>
               </div>
             </div>

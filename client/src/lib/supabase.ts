@@ -400,8 +400,12 @@ const RUTAS_BANCO: Record<string, string> = {
 
 export function obtenerRutaBanco(nombreBanco: string): string {
   const key = nombreBanco.toLowerCase().trim();
-  for (const [banco, ruta] of Object.entries(RUTAS_BANCO)) {
-    if (key.includes(banco)) return ruta;
+  // Exact match first
+  if (RUTAS_BANCO[key]) return RUTAS_BANCO[key];
+  // Then partial match, sorted by key length descending to match most specific first
+  const sorted = Object.entries(RUTAS_BANCO).sort((a, b) => b[0].length - a[0].length);
+  for (const [banco, ruta] of sorted) {
+    if (key.includes(banco) || banco.includes(key)) return ruta;
   }
   return '0000'; // Unknown bank
 }
@@ -438,6 +442,119 @@ export function generarTXTBancario(drafts: InvoiceDraft[]): string {
     return `${cedula},${titular},${rutaBanco},${cuenta},${tipoCuenta},${monto},${tipoTrans},${adenda}`;
   });
   return rows.join('\n');
+}
+
+// ─── Eliminar Lote ──────────────────────────────────────
+
+export async function eliminarLote(loteId: number): Promise<void> {
+  // First delete all invoices in this lote
+  const { error: errFacturas } = await supabase
+    .from('facturas')
+    .delete()
+    .eq('lote_id', loteId);
+  if (errFacturas) throw errFacturas;
+  // Then delete the lote itself
+  const { error: errLote } = await supabase
+    .from('lotes_facturas')
+    .delete()
+    .eq('id', loteId);
+  if (errLote) throw errLote;
+}
+
+// ─── Excel Export ───────────────────────────────────────
+
+export function generarExcelLote(
+  drafts: InvoiceDraft[],
+  loteNombre: string,
+  loteFecha: string
+): void {
+  import('xlsx').then((XLSX) => {
+    const dateStr = loteFecha.replace(/-/g, '');
+    const sheetName = dateStr;
+
+    // Header rows
+    const headerRows = [
+      ['Responsable del reporte: asistente taproom'],
+      ['Email de responsable: info@casabruja.com'],
+      [`EVENTUALES-${dateStr}`],
+      [`Fecha de reporte: ${loteFecha.replace(/-/g, '/')}`],
+      ['Comentarios: '],
+      [], // empty row
+      [
+        'No.',
+        'FECHA',
+        'FACTURA No.',
+        'RUC/CEDULA',
+        'DV',
+        'PROVEEDOR',
+        'DESCRIPCION',
+        'SIN ITBMS',
+        'ITBMS',
+        'VALOR TOTAL',
+        'Cuenta de Banco',
+        'Banco',
+        'Titular',
+      ],
+    ];
+
+    // Data rows
+    const dataRows = drafts.map((d, idx) => [
+      idx + 1,
+      d.fecha,
+      d.numero_factura,
+      d.persona.cedula,
+      d.persona.dv && d.persona.dv.trim() ? d.persona.dv.trim() : '-',
+      d.persona.nombre_completo,
+      `SP ${d.persona.nombre_completo}`,
+      d.saldo_adeudado,
+      '', // ITBMS empty
+      d.saldo_adeudado,
+      d.persona.cuenta_bancaria,
+      d.persona.nombre_banco,
+      d.persona.titular_cuenta || d.persona.nombre_completo,
+    ]);
+
+    // Total row
+    const totalRow = [
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      drafts.reduce((s, d) => s + d.saldo_adeudado, 0),
+      '',
+      '',
+      '',
+    ];
+
+    const allRows = [...headerRows, ...dataRows, totalRow];
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+
+    // Set column widths
+    ws['!cols'] = [
+      { wch: 5 },  // No.
+      { wch: 12 }, // FECHA
+      { wch: 12 }, // FACTURA No.
+      { wch: 15 }, // RUC/CEDULA
+      { wch: 5 },  // DV
+      { wch: 28 }, // PROVEEDOR
+      { wch: 32 }, // DESCRIPCION
+      { wch: 12 }, // SIN ITBMS
+      { wch: 8 },  // ITBMS
+      { wch: 14 }, // VALOR TOTAL
+      { wch: 20 }, // Cuenta de Banco
+      { wch: 18 }, // Banco
+      { wch: 28 }, // Titular
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    XLSX.writeFile(wb, `EVENTUALES${dateStr}.xlsx`);
+  });
 }
 
 /** Download TXT as file */

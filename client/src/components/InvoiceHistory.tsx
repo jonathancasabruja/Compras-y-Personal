@@ -1,11 +1,12 @@
 /**
  * InvoiceHistory — Shows lotes (batches) and their invoices.
  * Click a lote to expand and see all invoices within it.
+ * Supports: view invoice, print batch, download TXT ACH, download Excel, delete lote.
  */
 
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Loader2, ChevronDown, ChevronRight, Eye, FileText, Printer, FileSpreadsheet } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronRight, Eye, FileText, Printer, FileSpreadsheet, Trash2, Download } from 'lucide-react';
 import {
   type Lote,
   type Factura,
@@ -13,7 +14,10 @@ import {
   type DeptLineItem,
   obtenerLotes,
   obtenerFacturasPorLote,
+  eliminarLote,
+  generarExcelLote,
 } from '@/lib/supabase';
+import { toast } from 'sonner';
 
 interface Props {
   onViewInvoice: (draft: InvoiceDraft) => void;
@@ -68,6 +72,8 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
   const [expandedLote, setExpandedLote] = useState<number | null>(null);
   const [loteFacturas, setLoteFacturas] = useState<Record<number, Factura[]>>({});
   const [loadingLote, setLoadingLote] = useState<number | null>(null);
+  const [deletingLote, setDeletingLote] = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   useEffect(() => {
     loadLotes();
@@ -118,6 +124,38 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
     onDownloadCSV(drafts, `ACH_${loteNombre.replace(/\s+/g, '_')}.txt`);
   }
 
+  function handleDownloadExcelLote(loteId: number, loteNombre: string, loteFecha: string) {
+    const facturas = loteFacturas[loteId];
+    if (!facturas) return;
+    const drafts = facturas.map(facturaToDraft);
+    generarExcelLote(drafts, loteNombre, loteFecha);
+    toast.success('Archivo Excel descargado');
+  }
+
+  async function handleDeleteLote(loteId: number) {
+    if (confirmDeleteId !== loteId) {
+      setConfirmDeleteId(loteId);
+      return;
+    }
+    setDeletingLote(loteId);
+    try {
+      await eliminarLote(loteId);
+      setLotes((prev) => prev.filter((l) => l.id !== loteId));
+      setLoteFacturas((prev) => {
+        const copy = { ...prev };
+        delete copy[loteId];
+        return copy;
+      });
+      if (expandedLote === loteId) setExpandedLote(null);
+      toast.success('Lote eliminado correctamente');
+    } catch (err: any) {
+      toast.error('Error al eliminar lote: ' + (err?.message || 'Error desconocido'));
+    } finally {
+      setDeletingLote(null);
+      setConfirmDeleteId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center py-12">
@@ -143,44 +181,86 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
         const isExpanded = expandedLote === lote.id;
         const facturas = lote.id ? loteFacturas[lote.id] : undefined;
         const isLoadingThis = loadingLote === lote.id;
+        const isDeleting = deletingLote === lote.id;
+        const isConfirmingDelete = confirmDeleteId === lote.id;
 
         return (
           <div
             key={lote.id}
             className="border rounded-lg overflow-hidden"
-            style={{ borderColor: '#e5e7eb' }}
+            style={{ borderColor: isConfirmingDelete ? '#fca5a5' : '#e5e7eb' }}
           >
             {/* Lote header */}
-            <button
-              onClick={() => lote.id && toggleLote(lote.id)}
-              className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
-              style={{ backgroundColor: isExpanded ? '#f9fafb' : '#ffffff' }}
-            >
-              <div className="flex items-center gap-3">
-                {isExpanded ? (
-                  <ChevronDown className="w-4 h-4" style={{ color: '#6b7280' }} />
-                ) : (
-                  <ChevronRight className="w-4 h-4" style={{ color: '#6b7280' }} />
-                )}
-                <div className="text-left">
-                  <div className="font-semibold text-sm" style={{ color: '#111827' }}>
-                    {lote.nombre}
-                  </div>
-                  <div className="text-xs" style={{ color: '#9ca3af' }}>
-                    {lote.fecha} · {lote.total_facturas} factura
-                    {lote.total_facturas !== 1 ? 's' : ''}
+            <div className="flex items-center">
+              <button
+                onClick={() => lote.id && toggleLote(lote.id)}
+                className="flex-1 flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+                style={{ backgroundColor: isExpanded ? '#f9fafb' : '#ffffff' }}
+              >
+                <div className="flex items-center gap-3">
+                  {isExpanded ? (
+                    <ChevronDown className="w-4 h-4" style={{ color: '#6b7280' }} />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" style={{ color: '#6b7280' }} />
+                  )}
+                  <div className="text-left">
+                    <div className="font-semibold text-sm" style={{ color: '#111827' }}>
+                      {lote.nombre}
+                    </div>
+                    <div className="text-xs" style={{ color: '#9ca3af' }}>
+                      {lote.fecha} · {lote.total_facturas} factura
+                      {lote.total_facturas !== 1 ? 's' : ''}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="text-right">
-                <div
-                  className="font-bold text-sm"
-                  style={{ color: '#1B4965', fontFamily: "'JetBrains Mono', monospace" }}
+                <div className="text-right">
+                  <div
+                    className="font-bold text-sm"
+                    style={{ color: '#1B4965', fontFamily: "'JetBrains Mono', monospace" }}
+                  >
+                    ${fmt(lote.monto_total)}
+                  </div>
+                </div>
+              </button>
+              {/* Delete button on header */}
+              <div className="pr-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  disabled={isDeleting}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    lote.id && handleDeleteLote(lote.id);
+                  }}
+                  title={isConfirmingDelete ? 'Click de nuevo para confirmar' : 'Eliminar lote'}
                 >
-                  ${fmt(lote.monto_total)}
-                </div>
+                  {isDeleting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: '#ef4444' }} />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" style={{ color: isConfirmingDelete ? '#ef4444' : '#9ca3af' }} />
+                  )}
+                </Button>
               </div>
-            </button>
+            </div>
+
+            {/* Confirm delete banner */}
+            {isConfirmingDelete && (
+              <div className="px-4 py-2 text-xs flex items-center justify-between" style={{ backgroundColor: '#fef2f2', borderTop: '1px solid #fecaca' }}>
+                <span style={{ color: '#dc2626' }}>
+                  Se eliminarán todas las facturas de este lote. Click el icono de nuevo para confirmar.
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs"
+                  onClick={() => setConfirmDeleteId(null)}
+                  style={{ color: '#6b7280' }}
+                >
+                  Cancelar
+                </Button>
+              </div>
+            )}
 
             {/* Expanded: show invoices */}
             {isExpanded && (
@@ -243,7 +323,7 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
                       })}
                     </div>
                     <div
-                      className="px-4 py-2 flex justify-end gap-2"
+                      className="px-4 py-2 flex justify-end gap-2 flex-wrap"
                       style={{ backgroundColor: '#f9fafb', borderTop: '1px solid #e5e7eb' }}
                     >
                       <Button
@@ -253,7 +333,7 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
                         onClick={() => lote.id && handlePrintLote(lote.id)}
                       >
                         <Printer className="w-3.5 h-3.5" />
-                        Imprimir Lote
+                        Imprimir
                       </Button>
                       {onDownloadCSV && (
                         <Button
@@ -267,6 +347,16 @@ export default function InvoiceHistory({ onViewInvoice, onPrintBatch, onDownload
                           TXT ACH
                         </Button>
                       )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 text-xs"
+                        style={{ color: '#1B4965', borderColor: '#bfdbfe' }}
+                        onClick={() => lote.id && handleDownloadExcelLote(lote.id, lote.nombre, lote.fecha)}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Excel
+                      </Button>
                     </div>
                   </>
                 ) : (
