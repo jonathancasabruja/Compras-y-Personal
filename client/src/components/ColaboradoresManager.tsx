@@ -1,7 +1,7 @@
 /**
- * ColaboradoresManager — Manage active/inactive collaborators
+ * ColaboradoresManager — Manage active/inactive eventuales
  * Shows all registered persons with toggle for active status
- * and department assignment. Inactive collaborators stay registered
+ * and department assignment. Inactive eventuales stay registered
  * but won't appear in the automatic payment list.
  */
 
@@ -54,7 +54,7 @@ export default function ColaboradoresManager({ onColaboradoresChanged }: Props) 
       setTarifas(tars);
     } catch (err) {
       console.error(err);
-      toast.error('Error al cargar colaboradores');
+      toast.error('Error al cargar eventuales');
     } finally {
       setLoading(false);
     }
@@ -179,7 +179,7 @@ export default function ColaboradoresManager({ onColaboradoresChanged }: Props) 
         <div className="text-center py-8">
           <Users className="w-10 h-10 mx-auto mb-2" style={{ color: '#d1d5db' }} />
           <p className="text-sm" style={{ color: '#9ca3af' }}>
-            {filter ? 'No se encontraron resultados' : `No hay colaboradores ${showTab}`}
+            {filter ? 'No se encontraron resultados' : `No hay eventuales ${showTab}`}
           </p>
         </div>
       ) : (

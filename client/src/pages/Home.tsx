@@ -3,8 +3,8 @@
  * ======================================
  * Tabs:
  *  1. Crear Lote — Manual batch creation (search/add persons one by one)
- *  2. Pagos Colaboradores — Auto-loads active collaborators for batch payment
- *  3. Colaboradores — Manage active/inactive collaborators
+ *  2. Pagos Eventuales — Auto-loads active eventuales for batch payment
+ *  3. Eventuales — Manage active/inactive eventuales
  *  4. Historial — View saved batches and invoices
  */
 
@@ -164,13 +164,7 @@ export default function Home() {
       return;
     }
 
-    const numUsed = batchEntries.some(
-      (e, idx) => e.formData.numeroFactura === currentFormData.numeroFactura && idx !== currentEditIndex
-    );
-    if (numUsed) {
-      toast.error('Ese número de factura ya está asignado a otra persona en este lote');
-      return;
-    }
+    // Invoice numbers are per-person, duplicates in the same batch are allowed
 
     const entry: BatchEntry = {
       persona: selectedPersona,
@@ -396,28 +390,20 @@ export default function Home() {
     const parts = fecha.split('-');
     const fechaFmt = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : fecha;
     const deptNames = departamentos.map((d) => d.departamento).join(', ');
-    const totalHorasExtra = departamentos.reduce((s, d) => s + d.horas_extra, 0);
-    const tarifaHE = departamentos[0]?.tarifa_hora_extra ?? 5;
 
-    let rowsHtml = departamentos
+    const rowsHtml = departamentos
       .map(
-        (d) => `<tr style="border-bottom:1px solid #f0f0f0;">
+        (d) => {
+          const lineTotal = d.subtotal ?? (d.dias * d.tarifa_diaria + d.horas_extra * d.tarifa_hora_extra);
+          return `<tr style="border-bottom:1px solid #f0f0f0;">
         <td style="padding:10px 12px;font-size:12px;color:#222;font-weight:600;">SERVICIOS PROFESIONALES – ${d.departamento}</td>
         <td style="padding:10px 12px;text-align:center;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">${d.dias}</td>
         <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(d.tarifa_diaria)}</td>
-        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(d.dias * d.tarifa_diaria)}</td>
-      </tr>`
+        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(lineTotal)}</td>
+      </tr>`;
+        }
       )
       .join('');
-
-    if (totalHorasExtra > 0) {
-      rowsHtml += `<tr style="border-bottom:1px solid #f0f0f0;">
-        <td style="padding:10px 12px;font-size:12px;color:#222;font-weight:600;">HORAS EXTRA</td>
-        <td style="padding:10px 12px;text-align:center;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">${totalHorasExtra}</td>
-        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(tarifaHE)}</td>
-        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(totalHorasExtra * tarifaHE)}</td>
-      </tr>`;
-    }
 
     return `<div style="font-family:'DM Sans',system-ui,sans-serif;padding:28px 36px;height:297mm;box-sizing:border-box;background:#fff;color:#1a1a1a;width:210mm;margin:0 auto;display:flex;flex-direction:column;page-break-after:always;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;">
@@ -647,7 +633,7 @@ export default function Home() {
                 <CreditCard className="w-3.5 h-3.5" /> Pagos
               </TabsTrigger>
               <TabsTrigger value="colaboradores" className="text-xs gap-1.5">
-                <Users className="w-3.5 h-3.5" /> Colaboradores
+                <Users className="w-3.5 h-3.5" /> Eventuales
               </TabsTrigger>
               <TabsTrigger value="history" className="text-xs gap-1.5">
                 <History className="w-3.5 h-3.5" /> Historial
@@ -839,7 +825,7 @@ export default function Home() {
               </div>
             </TabsContent>
 
-            {/* ── TAB: Pagos Colaboradores ── */}
+            {/* ── TAB: Pagos Eventuales ── */}
             <TabsContent value="pagos">
               <Card className="p-5">
                 <PagosColaboradores
@@ -849,14 +835,15 @@ export default function Home() {
               </Card>
             </TabsContent>
 
-            {/* ── TAB: Colaboradores ── */}
+            {/* ── TAB: Eventuales ── */}
             <TabsContent value="colaboradores">
               <Card className="p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-sm font-semibold" style={{ color: '#111827' }}>Gestión de Colaboradores</h2>
+                  <h2 className="text-sm font-semibold" style={{ color: '#111827' }}>Gestión de Eventuales</h2>
                 </div>
                 <ColaboradoresManager
                   onColaboradoresChanged={() => setColabRefreshKey((k) => k + 1)}
+                  /* Renamed to Eventuales */
                 />
               </Card>
             </TabsContent>

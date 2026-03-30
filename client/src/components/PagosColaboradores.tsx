@@ -1,8 +1,8 @@
 /**
  * PagosColaboradores — Batch payment module
- * Auto-loads all active collaborators with their personalized rates.
- * Each collaborator row shows department, days worked, extra hours, and calculated total.
- * Generates invoices for all collaborators in one batch.
+ * Auto-loads all active eventuales with their personalized rates.
+ * Each eventual row shows department, days worked, extra hours, and calculated total.
+ * Generates invoices for all eventuales in one batch.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -117,7 +117,7 @@ export default function PagosColaboradores({ onGenerateInvoices, refreshKey }: P
       setRows(rowsData);
     } catch (err) {
       console.error(err);
-      toast.error('Error al cargar colaboradores');
+      toast.error('Error al cargar eventuales');
     } finally {
       setLoading(false);
     }
@@ -188,7 +188,7 @@ export default function PagosColaboradores({ onGenerateInvoices, refreshKey }: P
 
     const includedRows = rows.filter((r) => r.included && r.total > 0);
     if (includedRows.length === 0) {
-      toast.error('No hay colaboradores con montos para facturar');
+      toast.error('No hay eventuales con montos para facturar');
       return;
     }
 
@@ -225,7 +225,7 @@ export default function PagosColaboradores({ onGenerateInvoices, refreshKey }: P
     return (
       <div className="flex flex-col items-center justify-center py-16">
         <Loader2 className="w-8 h-8 animate-spin mb-3" style={{ color: '#1B4965' }} />
-        <p className="text-sm" style={{ color: '#6b7280' }}>Cargando colaboradores activos...</p>
+        <p className="text-sm" style={{ color: '#6b7280' }}>Cargando eventuales activos...</p>
       </div>
     );
   }
@@ -234,9 +234,9 @@ export default function PagosColaboradores({ onGenerateInvoices, refreshKey }: P
     return (
       <div className="text-center py-16">
         <Users className="w-12 h-12 mx-auto mb-3" style={{ color: '#d1d5db' }} />
-        <p className="text-sm font-medium" style={{ color: '#6b7280' }}>No hay colaboradores activos</p>
+        <p className="text-sm font-medium" style={{ color: '#6b7280' }}>No hay eventuales activos</p>
         <p className="text-xs mt-1" style={{ color: '#9ca3af' }}>
-          Active colaboradores en la pestaña "Colaboradores" para verlos aquí
+          Active eventuales en la pestaña "Eventuales" para verlos aquí
         </p>
       </div>
     );
@@ -282,7 +282,7 @@ export default function PagosColaboradores({ onGenerateInvoices, refreshKey }: P
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#6b7280' }}>
-            Colaboradores Activos ({rows.length})
+            Eventuales Activos ({rows.length})
           </p>
         </div>
 

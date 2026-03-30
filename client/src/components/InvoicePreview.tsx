@@ -23,8 +23,6 @@ export default function InvoicePreview({ draft, id }: Props) {
   const { persona, departamentos, empresa, fecha, numero_factura, saldo_adeudado } = draft;
 
   const deptNames = departamentos.map((d) => d.departamento).join(', ');
-  const totalHorasExtra = departamentos.reduce((s, d) => s + d.horas_extra, 0);
-  const tarifaHoraExtra = departamentos[0]?.tarifa_hora_extra ?? 5;
 
   return (
     <div
@@ -96,30 +94,25 @@ export default function InvoicePreview({ draft, id }: Props) {
             </tr>
           </thead>
           <tbody>
-            {departamentos.map((item: DeptLineItem, idx: number) => (
-              <tr key={idx} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '10px 12px', fontSize: '12px', color: '#222222', fontWeight: 600 }}>
-                  SERVICIOS PROFESIONALES – {item.departamento}
-                </td>
-                <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {item.dias}
-                </td>
-                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-                  USD {fmt(item.tarifa_diaria)}
-                </td>
-                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
-                  USD {fmt(item.dias * item.tarifa_diaria)}
-                </td>
-              </tr>
-            ))}
-            {totalHorasExtra > 0 && (
-              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '10px 12px', fontSize: '12px', color: '#222222', fontWeight: 600 }}>HORAS EXTRA</td>
-                <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>{totalHorasExtra}</td>
-                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(tarifaHoraExtra)}</td>
-                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>USD {fmt(totalHorasExtra * tarifaHoraExtra)}</td>
-              </tr>
-            )}
+            {departamentos.map((item: DeptLineItem, idx: number) => {
+              const lineTotal = item.subtotal ?? (item.dias * item.tarifa_diaria + item.horas_extra * item.tarifa_hora_extra);
+              return (
+                <tr key={idx} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                  <td style={{ padding: '10px 12px', fontSize: '12px', color: '#222222', fontWeight: 600 }}>
+                    SERVICIOS PROFESIONALES – {item.departamento}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
+                    {item.dias}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
+                    USD {fmt(item.tarifa_diaria)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '12px', color: '#444444', fontFamily: "'JetBrains Mono', monospace" }}>
+                    USD {fmt(lineTotal)}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
