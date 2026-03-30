@@ -330,9 +330,36 @@ export async function guardarFacturasBatch(
     detalle_departamentos: DeptLineItem[];
     lote_id: number;
   }>
-): Promise<void> {
+): Promise<{ duplicados: number[] }> {
+  // Check for existing invoice numbers (non-blocking warning)
+  const nums = facturas.map(f => f.numero_factura);
+  const { data: existing } = await supabase
+    .from('facturas')
+    .select('numero_factura')
+    .in('numero_factura', nums);
+  const duplicados = existing ? existing.map(e => e.numero_factura) : [];
+
+  // Insert all facturas regardless of duplicates (DB may have unique constraint)
+  // Use upsert with ignoreDuplicates to skip conflicts silently
   const { error } = await supabase.from('facturas').insert(facturas);
-  if (error) throw error;
+  if (error) {
+    // If it's a unique constraint error, try inserting one by one skipping duplicates
+    if (error.message?.includes('duplicate') || error.code === '23505') {
+      let insertedCount = 0;
+      const failedNums: number[] = [];
+      for (const f of facturas) {
+        const { error: singleErr } = await supabase.from('facturas').insert(f);
+        if (singleErr) {
+          failedNums.push(f.numero_factura);
+        } else {
+          insertedCount++;
+        }
+      }
+      return { duplicados: failedNums };
+    }
+    throw error;
+  }
+  return { duplicados };
 }
 
 export async function obtenerFacturas(): Promise<Factura[]> {

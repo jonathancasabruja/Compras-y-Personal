@@ -278,16 +278,21 @@ export default function Home() {
         };
       });
 
-      await guardarFacturasBatch(facturas);
-      toast.success(`Lote "${previewBatchName}" guardado con ${previewDrafts.length} factura(s)`);
+      const result = await guardarFacturasBatch(facturas);
+      
+      if (result.duplicados.length > 0) {
+        const nums = result.duplicados.join(', ');
+        toast.warning(
+          `Lote guardado. Nota: las facturas #${nums} ya existían y fueron omitidas.`,
+          { duration: 6000 }
+        );
+      } else {
+        toast.success(`Lote "${previewBatchName}" guardado con ${previewDrafts.length} factura(s)`);
+      }
       setIsSaved(true);
       setRefreshKey((k) => k + 1);
     } catch (err: any) {
-      if (err?.message?.includes('duplicate') || err?.code === '23505') {
-        toast.error('Ya existe una factura con alguno de esos números. Verifique los números de factura.');
-      } else {
-        toast.error('Error al guardar: ' + (err?.message || 'Error desconocido'));
-      }
+      toast.error('Error al guardar: ' + (err?.message || 'Error desconocido'));
     } finally {
       setIsSaving(false);
     }
