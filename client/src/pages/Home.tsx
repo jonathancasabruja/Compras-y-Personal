@@ -466,19 +466,13 @@ export default function Home() {
     const fechaFmt = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : fecha;
     const deptNames = departamentos.map((d) => d.departamento).join(', ');
 
-    const rowsHtml = departamentos
-      .map(
-        (d) => {
-          const lineTotal = d.subtotal ?? (d.dias * d.tarifa_diaria + d.horas_extra * d.tarifa_hora_extra);
-          return `<tr style="border-bottom:1px solid #f0f0f0;">
-        <td style="padding:10px 12px;font-size:12px;color:#222;font-weight:600;">SERVICIOS PROFESIONALES – ${d.departamento}</td>
+    // Single row: SERVICIOS PROFESIONALES, qty 1, total amount
+    const rowsHtml = `<tr style="border-bottom:1px solid #f0f0f0;">
+        <td style="padding:10px 12px;font-size:12px;color:#222;font-weight:600;">SERVICIOS PROFESIONALES</td>
         <td style="padding:10px 12px;text-align:center;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">1</td>
-        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(lineTotal)}</td>
-        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(lineTotal)}</td>
+        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(saldo_adeudado)}</td>
+        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(saldo_adeudado)}</td>
       </tr>`;
-        }
-      )
-      .join('');
 
     return `<div style="font-family:'DM Sans',system-ui,sans-serif;padding:28px 36px;height:297mm;box-sizing:border-box;background:#fff;color:#1a1a1a;width:210mm;margin:0 auto;display:flex;flex-direction:column;page-break-after:always;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;">
