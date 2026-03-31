@@ -472,8 +472,8 @@ export default function Home() {
           const lineTotal = d.subtotal ?? (d.dias * d.tarifa_diaria + d.horas_extra * d.tarifa_hora_extra);
           return `<tr style="border-bottom:1px solid #f0f0f0;">
         <td style="padding:10px 12px;font-size:12px;color:#222;font-weight:600;">SERVICIOS PROFESIONALES – ${d.departamento}</td>
-        <td style="padding:10px 12px;text-align:center;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">${d.dias}</td>
-        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(d.tarifa_diaria)}</td>
+        <td style="padding:10px 12px;text-align:center;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">1</td>
+        <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(lineTotal)}</td>
         <td style="padding:10px 12px;text-align:right;font-size:12px;color:#444;font-family:'JetBrains Mono',monospace;">USD ${fmt(lineTotal)}</td>
       </tr>`;
         }
@@ -512,7 +512,7 @@ export default function Home() {
           <thead><tr style="background:#333;">
             <th style="text-align:left;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:45%;">Artículo</th>
             <th style="text-align:center;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:15%;">Cantidad</th>
-            <th style="text-align:right;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:20%;">Tasa</th>
+            <th style="text-align:right;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:20%;">Precio Unit.</th>
             <th style="text-align:right;font-size:11px;font-weight:600;color:#fff;padding:8px 12px;width:20%;">Monto</th>
           </tr></thead>
           <tbody>${rowsHtml}</tbody>
