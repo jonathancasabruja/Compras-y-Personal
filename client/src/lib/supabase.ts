@@ -420,26 +420,40 @@ export function mergeTarifas(
 
 const RUTAS_BANCO: Record<string, string> = {
   'banco general': '71',
+  'bango general': '71',
+  'general': '71',
   'banisi': '1614',
   'st. georges bank': '1494',
   'st georges bank': '1494',
+  'st. george': '1494',
   'bac': '59',
+  'bac international': '59',
   'banistmo': '65',
   'caja de ahorros': '37',
+  'caja ahorros': '37',
   'global bank': '79',
+  'globalbank': '79',
   'multibank': '52',
+  'multi bank': '52',
   'scotiabank': '1332',
+  'scotia bank': '1332',
   'metrobank': '1400',
+  'metro bank': '1400',
   'credicorp bank': '1478',
+  'credicorp': '1478',
   'banco nacional': '38',
   'banconal': '38',
   'towerbank': '1436',
+  'tower bank': '1436',
   'mega bank': '1588',
+  'megabank': '1588',
   'la hipotecaria': '1614',
+  'hipotecaria': '1614',
   'banco delta': '1656',
   'banco aliado': '1494',
   'banco pichincha': '1700',
   'banco davivienda': '1700',
+  'davivienda': '1700',
 };
 
 export function obtenerRutaBanco(nombreBanco: string): string {
@@ -477,7 +491,7 @@ export function generarTXTBancario(drafts: InvoiceDraft[]): string {
   const rows = drafts.map((d) => {
     const cedula = sanitizeACH(d.persona.cedula).replace(/-/g, '').substring(0, 15);
     const titular = sanitizeACH(d.persona.titular_cuenta || d.persona.nombre_completo).replace(/-/g, '').substring(0, 22);
-    const rutaBanco = obtenerRutaBanco(d.persona.nombre_banco);
+    const rutaBanco = obtenerRutaBanco(d.persona.nombre_banco).padStart(4, '0');
     const cuenta = sanitizeACH(d.persona.cuenta_bancaria).replace(/-/g, '').substring(0, 17);
     const tipoCuenta = obtenerTipoCuentaCodigo(d.persona.tipo_cuenta);
     const monto = d.saldo_adeudado.toFixed(2);
