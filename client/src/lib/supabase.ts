@@ -555,22 +555,50 @@ export function generarExcelLote(
       ],
     ];
 
+    // Department abbreviation mapping
+    const DEPT_ABREV: Record<string, string> = {
+      'taproom': 'T',
+      'cocina': 'C',
+      'distribucion': 'D',
+      'distribución': 'D',
+      'produccion': 'P',
+      'producción': 'P',
+      'eventos': 'V',
+    };
+
+    function obtenerAbrevDepts(departamentos: { departamento: string }[]): string {
+      const abrevs = departamentos.map((dep) => {
+        const key = dep.departamento.toLowerCase().trim();
+        // Exact match first
+        if (DEPT_ABREV[key]) return DEPT_ABREV[key];
+        // Partial match
+        for (const [nombre, abrev] of Object.entries(DEPT_ABREV)) {
+          if (key.includes(nombre) || nombre.includes(key)) return abrev;
+        }
+        return dep.departamento.charAt(0).toUpperCase(); // Fallback: first letter
+      });
+      return abrevs.join(',');
+    }
+
     // Data rows
-    const dataRows = drafts.map((d, idx) => [
-      idx + 1,
-      d.fecha,
-      d.numero_factura,
-      d.persona.cedula,
-      d.persona.dv && d.persona.dv.trim() ? d.persona.dv.trim() : '-',
-      d.persona.nombre_completo,
-      `SP ${d.persona.nombre_completo}`,
-      d.saldo_adeudado,
-      '', // ITBMS empty
-      d.saldo_adeudado,
-      d.persona.cuenta_bancaria,
-      d.persona.nombre_banco,
-      d.persona.titular_cuenta || d.persona.nombre_completo,
-    ]);
+    const dataRows = drafts.map((d, idx) => {
+      const deptCodes = obtenerAbrevDepts(d.departamentos);
+      return [
+        idx + 1,
+        d.fecha,
+        d.numero_factura,
+        d.persona.cedula,
+        d.persona.dv && d.persona.dv.trim() ? d.persona.dv.trim() : '-',
+        d.persona.nombre_completo,
+        `SP ${d.persona.nombre_completo}-${deptCodes}`,
+        d.saldo_adeudado,
+        '', // ITBMS empty
+        d.saldo_adeudado,
+        d.persona.cuenta_bancaria,
+        d.persona.nombre_banco,
+        d.persona.titular_cuenta || d.persona.nombre_completo,
+      ];
+    });
 
     // Total row
     const totalRow = [
