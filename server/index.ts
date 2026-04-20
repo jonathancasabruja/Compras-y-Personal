@@ -2,6 +2,9 @@ import express from "express";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { appRouter } from "./routers";
+import { createContext } from "./trpc";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,6 +38,7 @@ function basicAuth(expectedPassword: string) {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  app.use(express.json({ limit: "10mb" }));
 
   const password = process.env.APP_PASSWORD;
   if (password) {
@@ -43,6 +47,15 @@ async function startServer() {
   } else {
     console.warn("APP_PASSWORD not set — server is unauthenticated");
   }
+
+  // tRPC API — all DB operations go through here (postgres superuser via db.ts).
+  app.use(
+    "/api/trpc",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext,
+    })
+  );
 
   // Serve static files from dist/public in production
   const staticPath =
