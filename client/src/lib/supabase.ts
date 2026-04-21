@@ -503,3 +503,286 @@ export function descargarTXT(contenido: string, nombreArchivo: string): void {
   link.click();
   URL.revokeObjectURL(url);
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Purchasing module: Órdenes de Compra + Fletes y Gastos
+// Shared types + thin fetch helpers over the new tRPC routers.
+// ═════════════════════════════════════════════════════════════════════════
+
+export type PoStatus = "draft" | "ordered" | "received" | "approved";
+export type PaymentStatus = "unpaid" | "partial" | "paid";
+export type AllocationMethod =
+  | "by_qty"
+  | "by_weight"
+  | "by_volume"
+  | "by_value"
+  | "fixed_manual";
+
+export interface PurchaseOrder {
+  id: number;
+  poNumber: string;
+  supplier: string;
+  supplierInvoiceNumber: string | null;
+  date: string;
+  expectedDate: string | null;
+  receivedDate: string | null;
+  status: PoStatus;
+  currency: string | null;
+  exchangeRate: number | null;
+  notes: string | null;
+  paymentTerms: string | null;
+  paymentMethod: string | null;
+  paymentStatus: string | null;
+  amountPaid: number | null;
+  paymentDate: string | null;
+  paymentReference: string | null;
+  localCurrency: string | null;
+  totalCost: number | null;
+  totalLandedCost: number | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PoItem {
+  id: number;
+  purchaseOrderId: number;
+  productCode: string;
+  productDescription: string | null;
+  category: string | null;
+  qty: number;
+  unit: string | null;
+  supplierQty: number | null;
+  supplierUom: string | null;
+  supplierLotNumber: string | null;
+  baseCostPerUnit: number | null;
+  baseTotalCost: number | null;
+  allocatedExtraCosts: number | null;
+  allocatedExtraCostPerUnit: number | null;
+  extraCostBreakdown: string | null;
+  landedTotalCost: number | null;
+  landedCostPerUnit: number | null;
+  landedCostLocal: number | null;
+  landedCostPerUnitLocal: number | null;
+  weightKg: number | null;
+  volumeL: number | null;
+}
+
+export interface PoExtraCost {
+  id: number;
+  purchaseOrderId: number;
+  costType: string;
+  description: string | null;
+  amount: number;
+  allocationMethod: AllocationMethod;
+  costInvoiceId: number | null;
+  costInvoiceAllocationId: number | null;
+  costInvoiceRef: string | null;
+  allocationPercentage: number | null;
+}
+
+export interface PoAttachment {
+  id: number;
+  purchaseOrderId: number;
+  fileUrl: string;
+  fileName: string | null;
+  documentType: string | null;
+  uploadedAt: string;
+}
+
+export interface PurchaseOrderFull {
+  po: PurchaseOrder;
+  items: PoItem[];
+  extraCosts: PoExtraCost[];
+  attachments: PoAttachment[];
+}
+
+export interface CostInvoice {
+  id: number;
+  invoiceNumber: string;
+  supplier: string;
+  costType: string;
+  date: string;
+  totalAmount: number;
+  currency: string | null;
+  allocatedAmount: number;
+  remainingAmount: number;
+  pdfUrl: string | null;
+  pdfFileName: string | null;
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CostInvoiceAllocation {
+  id: number;
+  costInvoiceId: number;
+  purchaseOrderId: number;
+  percentage: number;
+  allocatedAmount: number;
+  sourceCurrency: string | null;
+  targetCurrency: string | null;
+  exchangeRate: number | null;
+  convertedAmount: number | null;
+  notes: string | null;
+  poNumber?: string;
+}
+
+export interface CostInvoiceFull {
+  invoice: CostInvoice;
+  allocations: CostInvoiceAllocation[];
+}
+
+// ─── Purchase Orders ─────────────────────────────────────────────────────
+
+export async function listPurchaseOrders(): Promise<PurchaseOrder[]> {
+  return trpcQuery<PurchaseOrder[]>("purchaseOrders.list");
+}
+
+export async function getPurchaseOrder(id: number): Promise<PurchaseOrderFull | null> {
+  return trpcQuery<PurchaseOrderFull | null>("purchaseOrders.get", { id });
+}
+
+export async function nextPoNumber(): Promise<string> {
+  return trpcQuery<string>("purchaseOrders.nextNumber");
+}
+
+export interface CreatePoInput {
+  poNumber: string;
+  supplier: string;
+  supplierInvoiceNumber?: string | null;
+  date: string;
+  expectedDate?: string | null;
+  currency?: string;
+  exchangeRate?: number;
+  localCurrency?: string;
+  paymentTerms?: string | null;
+  paymentMethod?: string | null;
+  paymentStatus?: PaymentStatus;
+  amountPaid?: number | null;
+  paymentDate?: string | null;
+  paymentReference?: string | null;
+  notes?: string | null;
+  createdBy?: string | null;
+  items: Array<{
+    productCode: string;
+    productDescription?: string | null;
+    category?: string | null;
+    qty: number;
+    unit?: string | null;
+    supplierQty?: number | null;
+    supplierUom?: string | null;
+    supplierLotNumber?: string | null;
+    baseCostPerUnit?: number;
+    weightKg?: number | null;
+    volumeL?: number | null;
+  }>;
+  extraCosts?: Array<{
+    costType: string;
+    description?: string | null;
+    amount: number;
+    allocationMethod?: AllocationMethod;
+  }>;
+}
+
+export async function createPurchaseOrder(input: CreatePoInput): Promise<PurchaseOrder | null> {
+  return trpcMutate<PurchaseOrder | null>("purchaseOrders.create", input);
+}
+
+export async function updatePurchaseOrder(input: Partial<CreatePoInput> & { id: number; status?: PoStatus }): Promise<PurchaseOrder | null> {
+  return trpcMutate<PurchaseOrder | null>("purchaseOrders.update", input);
+}
+
+export async function deletePurchaseOrder(id: number): Promise<boolean> {
+  return trpcMutate<boolean>("purchaseOrders.delete", { id });
+}
+
+export async function setPurchaseOrderStatus(
+  id: number,
+  status: PoStatus,
+  receivedDate?: string | null,
+): Promise<void> {
+  await trpcMutate<{ ok: true }>("purchaseOrders.setStatus", { id, status, receivedDate });
+}
+
+export async function approvePurchaseOrder(id: number): Promise<void> {
+  await trpcMutate<{ ok: true }>("purchaseOrders.approve", { id });
+}
+
+export async function recalcLandedCosts(id: number): Promise<void> {
+  await trpcMutate<void>("purchaseOrders.recalcLanded", { id });
+}
+
+// ─── Cost Invoices (Fletes y Gastos) ──────────────────────────────────────
+
+export async function listCostInvoices(): Promise<CostInvoice[]> {
+  return trpcQuery<CostInvoice[]>("costInvoices.list");
+}
+
+export async function getCostInvoice(id: number): Promise<CostInvoiceFull | null> {
+  return trpcQuery<CostInvoiceFull | null>("costInvoices.get", { id });
+}
+
+export async function createCostInvoice(input: {
+  invoiceNumber: string;
+  supplier: string;
+  costType: string;
+  date: string;
+  totalAmount: number;
+  currency?: string;
+  pdfUrl?: string | null;
+  pdfFileName?: string | null;
+  notes?: string | null;
+  createdBy?: string | null;
+}): Promise<CostInvoice | null> {
+  return trpcMutate<CostInvoice | null>("costInvoices.create", input);
+}
+
+export async function updateCostInvoice(
+  id: number,
+  patch: Partial<{
+    invoiceNumber: string;
+    supplier: string;
+    costType: string;
+    date: string;
+    totalAmount: number;
+    currency: string;
+    pdfUrl: string | null;
+    pdfFileName: string | null;
+    notes: string | null;
+  }>,
+): Promise<CostInvoice | null> {
+  return trpcMutate<CostInvoice | null>("costInvoices.update", { id, ...patch });
+}
+
+export async function deleteCostInvoice(id: number): Promise<boolean> {
+  return trpcMutate<boolean>("costInvoices.delete", { id });
+}
+
+export async function allocateCostInvoice(input: {
+  costInvoiceId: number;
+  purchaseOrderId: number;
+  percentage?: number;
+  amount?: number;
+  notes?: string | null;
+  exchangeRate?: number | null;
+}): Promise<CostInvoiceAllocation | null> {
+  return trpcMutate<CostInvoiceAllocation | null>("costInvoices.allocate", input);
+}
+
+export async function deallocateCostInvoice(allocationId: number): Promise<boolean> {
+  return trpcMutate<boolean>("costInvoices.deallocate", { allocationId });
+}
+
+export async function costInvoiceAllocationsForPo(
+  purchaseOrderId: number,
+): Promise<(CostInvoiceAllocation & {
+  invoiceNumber: string;
+  supplier: string;
+  costType: string;
+  totalAmount: number;
+  invoiceCurrency: string;
+})[]> {
+  return trpcQuery("costInvoices.allocationsForPo", { purchaseOrderId });
+}
