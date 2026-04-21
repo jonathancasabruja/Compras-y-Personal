@@ -26,6 +26,8 @@ import {
   setPurchaseOrderStatus,
   addPoAttachment,
   deletePoAttachment,
+  getPoAttachment,
+  getPoAttachments,
   getSupplierProductMappings,
   learnSupplierMappings,
   normalizeUom,
@@ -38,6 +40,7 @@ import {
   deallocateCostInvoice,
   getCostInvoiceAllocationsForPo,
 } from "./purchasingDb";
+import { storagePut, isStorageConfigured } from "./storage";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -608,6 +611,9 @@ const purchaseOrdersRouter = router({
     .input(z.object({ qty: z.number(), uom: z.string() }))
     .query(({ input }) => normalizeUom(input.qty, input.uom)),
   attachments: router({
+    list: publicProcedure
+      .input(z.object({ purchaseOrderId: z.number() }))
+      .query(({ input }) => getPoAttachments(input.purchaseOrderId)),
     add: publicProcedure
       .input(z.object({
         purchaseOrderId: z.number(),
@@ -617,12 +623,52 @@ const purchaseOrdersRouter = router({
         documentType: z.string().nullable().optional(),
       }))
       .mutation(({ input }) => addPoAttachment(input)),
+    /**
+     * Browser-friendly upload path. Client sends base64-encoded bytes
+     * through tRPC (Express JSON limit = 10MB, plenty for any realistic
+     * PO PDF). We push the file to Manus storage if configured, then
+     * create the DB row. If storage is not configured, we still create
+     * the DB row but with an empty fileUrl — so the attachments list
+     * shows the file name + a "storage not configured" warning rather
+     * than silently dropping the upload.
+     */
+    upload: publicProcedure
+      .input(
+        z.object({
+          purchaseOrderId: z.number(),
+          fileName: z.string().min(1),
+          contentType: z.string().default("application/octet-stream"),
+          dataBase64: z.string().min(1),
+          documentType: z.string().nullable().optional(),
+        }),
+      )
+      .mutation(async ({ input }) => {
+        const bytes = Buffer.from(input.dataBase64, "base64");
+        // Key scheme: po/<poId>/<epoch>-<sanitized-filename>
+        const safe = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+        const key = `po/${input.purchaseOrderId}/${Date.now()}-${safe}`;
+        const stored = await storagePut(key, new Uint8Array(bytes), input.contentType);
+        const row = await addPoAttachment({
+          purchaseOrderId: input.purchaseOrderId,
+          fileUrl: stored.url,
+          fileName: input.fileName,
+          fileKey: stored.key,
+          documentType: input.documentType ?? null,
+        });
+        return {
+          attachment: row,
+          storageConfigured: isStorageConfigured(),
+        };
+      }),
     delete: publicProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deletePoAttachment(input.id);
         return { ok: true };
       }),
+    storageConfigured: publicProcedure.query(() => ({
+      configured: isStorageConfigured(),
+    })),
   }),
 });
 

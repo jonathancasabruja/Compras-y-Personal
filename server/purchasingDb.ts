@@ -322,6 +322,20 @@ export async function deletePoAttachment(id: number): Promise<void> {
   await db.delete(purchaseOrderAttachments).where(eq(purchaseOrderAttachments.id, id));
 }
 
+export async function getPoAttachment(id: number): Promise<PurchaseOrderAttachment | null> {
+  const db = reqDb();
+  const [row] = await db.select().from(purchaseOrderAttachments)
+    .where(eq(purchaseOrderAttachments.id, id));
+  return row || null;
+}
+
+export async function getPoAttachments(purchaseOrderId: number): Promise<PurchaseOrderAttachment[]> {
+  const db = reqDb();
+  return db.select().from(purchaseOrderAttachments)
+    .where(eq(purchaseOrderAttachments.purchaseOrderId, purchaseOrderId))
+    .orderBy(asc(purchaseOrderAttachments.id));
+}
+
 // ─── Supplier Product Mappings ──────────────────────────────────────────────
 export async function getSupplierProductMappings(
   supplierName?: string,

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ClipboardList,
   Plus,
@@ -11,6 +11,8 @@ import {
   ExternalLink,
   AlertTriangle,
   Loader2,
+  Upload,
+  FileText,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -23,10 +25,15 @@ import {
   approvePurchaseOrder,
   costInvoiceAllocationsForPo,
   recalcLandedCosts,
+  listPoAttachments,
+  uploadPoAttachment,
+  deletePoAttachment,
+  isStorageConfigured,
   type PurchaseOrder,
   type PurchaseOrderFull,
   type PoStatus,
   type CreatePoInput,
+  type PoAttachment,
 } from "@/lib/supabase";
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -314,16 +321,23 @@ function PoDetailDrawer({
 }) {
   const [full, setFull] = useState<PurchaseOrderFull | null>(null);
   const [allocs, setAllocs] = useState<Awaited<ReturnType<typeof costInvoiceAllocationsForPo>>>([]);
+  const [attachments, setAttachments] = useState<PoAttachment[]>([]);
+  const [storageOk, setStorageOk] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const load = async () => {
     try {
-      const [f, a] = await Promise.all([
+      const [f, a, att, cfg] = await Promise.all([
         getPurchaseOrder(poRow.id),
         costInvoiceAllocationsForPo(poRow.id),
+        listPoAttachments(poRow.id),
+        isStorageConfigured().catch(() => false),
       ]);
       setFull(f);
       setAllocs(a);
+      setAttachments(att);
+      setStorageOk(cfg);
     } catch (e: any) {
       toast.error(e?.message ?? "Error cargando OC");
     }
@@ -334,6 +348,53 @@ function PoDetailDrawer({
     // Reload if the underlying row id changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [poRow.id]);
+
+  const onFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset so choosing the same file twice still triggers change
+    e.target.value = "";
+    // 8 MB guardrail — server JSON limit is 10 MB, base64 adds ~33% overhead
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("Archivo muy grande (máx 8 MB)");
+      return;
+    }
+    setBusy("upload");
+    try {
+      const { attachment, storageConfigured } = await uploadPoAttachment(poRow.id, file);
+      if (!storageConfigured) {
+        toast.warning("Almacenamiento no configurado — se guardó el registro pero no el archivo");
+      } else {
+        toast.success(`Subido: ${file.name}`);
+      }
+      setStorageOk(storageConfigured);
+      if (attachment) {
+        setAttachments((prev) => [...prev, attachment]);
+      } else {
+        // fall back to reloading the list
+        const fresh = await listPoAttachments(poRow.id);
+        setAttachments(fresh);
+      }
+    } catch (err: any) {
+      toast.error(err?.message ?? "Error subiendo archivo");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doDeleteAttachment = async (id: number) => {
+    if (!confirm("¿Eliminar este adjunto?")) return;
+    setBusy("delAttach");
+    try {
+      await deletePoAttachment(id);
+      setAttachments((prev) => prev.filter((a) => a.id !== id));
+      toast.success("Adjunto eliminado");
+    } catch (err: any) {
+      toast.error(err?.message ?? "Error eliminando");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const doStatus = async (status: PoStatus) => {
     setBusy(status);
@@ -503,6 +564,89 @@ function PoDetailDrawer({
               </table>
             )}
           </Section>
+
+          {/* Attachments */}
+          <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3 style={{ fontSize: "0.8125rem", fontWeight: 800, color: INK, margin: 0, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Adjuntos ({attachments.length})
+            </h3>
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                style={{ display: "none" }}
+                onChange={onFileChosen}
+                accept="application/pdf,image/*"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy === "upload"}
+                style={btnSecondary}
+              >
+                {busy === "upload" ? (
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+                ) : (
+                  <Upload size={14} />
+                )}
+                Subir archivo
+              </button>
+            </>
+          </div>
+          {storageOk === false && (
+            <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "oklch(0.95 0.08 85)", border: `1px solid oklch(0.88 0.08 85)`, borderRadius: 8, fontSize: "0.75rem", color: "oklch(0.35 0.15 70)" }}>
+              <AlertTriangle size={12} style={{ display: "inline", marginRight: 4 }} />
+              Almacenamiento (BUILT_IN_FORGE_API_*) no configurado en Railway. Los metadatos del archivo se guardan en DB pero no hay copia del archivo en la nube.
+            </div>
+          )}
+          <div style={{ marginTop: "0.5rem" }}>
+            {attachments.length === 0 ? (
+              <Empty>Sin adjuntos.</Empty>
+            ) : (
+              <table style={miniTable}>
+                <thead>
+                  <tr>
+                    <Th>Archivo</Th>
+                    <Th>Tipo</Th>
+                    <Th>Subido</Th>
+                    <Th style={{ width: 60 }}></Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {attachments.map((a) => (
+                    <tr key={a.id}>
+                      <Td style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <FileText size={14} style={{ color: MUTED }} />
+                        {a.fileUrl ? (
+                          <a href={a.fileUrl} target="_blank" rel="noopener noreferrer" style={{ color: CYAN, textDecoration: "underline" }}>
+                            {a.fileName || "archivo"}
+                          </a>
+                        ) : (
+                          <span style={{ color: INK }}>{a.fileName || "archivo"}</span>
+                        )}
+                        {!a.fileUrl && (
+                          <span style={{ fontSize: "0.65rem", color: MUTED, fontStyle: "italic" }}>(sin URL)</span>
+                        )}
+                      </Td>
+                      <Td style={{ color: MUTED }}>{a.documentType || "—"}</Td>
+                      <Td style={{ color: MUTED, fontSize: "0.75rem" }}>
+                        {new Date(a.uploadedAt).toLocaleDateString()}
+                      </Td>
+                      <Td style={{ textAlign: "right" }}>
+                        <button
+                          onClick={() => doDeleteAttachment(a.id)}
+                          disabled={busy === "delAttach"}
+                          style={iconBtnDanger}
+                          aria-label="Eliminar adjunto"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
 
           {/* Cost invoice allocations */}
           <Section title={`Asignaciones de Fletes y Gastos (${allocs.length})`}>

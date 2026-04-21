@@ -786,3 +786,57 @@ export async function costInvoiceAllocationsForPo(
 })[]> {
   return trpcQuery("costInvoices.allocationsForPo", { purchaseOrderId });
 }
+
+// ─── PO Attachments ──────────────────────────────────────────────────────
+
+export async function listPoAttachments(purchaseOrderId: number): Promise<PoAttachment[]> {
+  return trpcQuery<PoAttachment[]>("purchaseOrders.attachments.list", { purchaseOrderId });
+}
+
+export async function deletePoAttachment(id: number): Promise<void> {
+  await trpcMutate<{ ok: true }>("purchaseOrders.attachments.delete", { id });
+}
+
+export async function isStorageConfigured(): Promise<boolean> {
+  const r = await trpcQuery<{ configured: boolean }>("purchaseOrders.attachments.storageConfigured");
+  return r?.configured ?? false;
+}
+
+/**
+ * Read a File/Blob as base64 (no `data:...;base64,` prefix) in the browser
+ * and push it through the tRPC upload procedure. Returns the newly
+ * created attachment row — `fileUrl` is empty when server storage isn't
+ * configured, which the caller should surface to the user.
+ */
+export async function uploadPoAttachment(
+  purchaseOrderId: number,
+  file: File,
+  documentType?: string,
+): Promise<{ attachment: PoAttachment | null; storageConfigured: boolean }> {
+  const dataBase64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("FileReader returned non-string"));
+        return;
+      }
+      // Strip the data URL prefix so we send raw base64
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+
+  return trpcMutate<{ attachment: PoAttachment | null; storageConfigured: boolean }>(
+    "purchaseOrders.attachments.upload",
+    {
+      purchaseOrderId,
+      fileName: file.name,
+      contentType: file.type || "application/octet-stream",
+      dataBase64,
+      documentType: documentType ?? null,
+    },
+  );
+}
