@@ -15,6 +15,29 @@ import {
   tarifasDepartamento,
   tarifasPersona,
 } from "../drizzle/schema";
+import {
+  getAllPurchaseOrders,
+  getPurchaseOrderById,
+  getNextPoNumber,
+  createPurchaseOrder,
+  updatePurchaseOrder,
+  deletePurchaseOrder,
+  calculateAndSaveLandedCosts,
+  setPurchaseOrderStatus,
+  addPoAttachment,
+  deletePoAttachment,
+  getSupplierProductMappings,
+  learnSupplierMappings,
+  normalizeUom,
+  getAllCostInvoices,
+  getCostInvoiceById,
+  createCostInvoice,
+  updateCostInvoice,
+  deleteCostInvoice,
+  allocateCostInvoice,
+  deallocateCostInvoice,
+  getCostInvoiceAllocationsForPo,
+} from "./purchasingDb";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -436,11 +459,250 @@ const lotesRouter = router({
     }),
 });
 
+// ─── Purchase Orders ────────────────────────────────────────────────────────
+
+const poItemInput = z.object({
+  productCode: z.string(),
+  productDescription: z.string().nullable().optional(),
+  category: z.string().nullable().optional(),
+  qty: z.number(),
+  unit: z.string().nullable().optional(),
+  supplierQty: z.number().nullable().optional(),
+  supplierUom: z.string().nullable().optional(),
+  supplierLotNumber: z.string().nullable().optional(),
+  baseCostPerUnit: z.number().optional(),
+  weightKg: z.number().nullable().optional(),
+  volumeL: z.number().nullable().optional(),
+});
+
+const poExtraCostInput = z.object({
+  costType: z.string(),
+  description: z.string().nullable().optional(),
+  amount: z.number(),
+  allocationMethod: z.enum(["by_qty", "by_weight", "by_volume", "by_value", "fixed_manual"]).optional(),
+});
+
+const purchaseOrdersRouter = router({
+  list: publicProcedure.query(() => getAllPurchaseOrders()),
+  get: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .query(({ input }) => getPurchaseOrderById(input.id)),
+  nextNumber: publicProcedure.query(() => getNextPoNumber()),
+  create: publicProcedure
+    .input(z.object({
+      poNumber: z.string(),
+      supplier: z.string(),
+      supplierInvoiceNumber: z.string().nullable().optional(),
+      date: z.string(),
+      expectedDate: z.string().nullable().optional(),
+      currency: z.string().optional(),
+      exchangeRate: z.number().optional(),
+      localCurrency: z.string().optional(),
+      paymentTerms: z.string().nullable().optional(),
+      paymentMethod: z.string().nullable().optional(),
+      paymentStatus: z.enum(["unpaid", "partial", "paid"]).optional(),
+      amountPaid: z.number().nullable().optional(),
+      paymentDate: z.string().nullable().optional(),
+      paymentReference: z.string().nullable().optional(),
+      notes: z.string().nullable().optional(),
+      createdBy: z.string().nullable().optional(),
+      items: z.array(poItemInput),
+      extraCosts: z.array(poExtraCostInput).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { items, extraCosts, ...poData } = input;
+      const normalizedItems = items.map((item) => {
+        if (item.supplierUom && item.supplierQty) {
+          const norm = normalizeUom(item.supplierQty, item.supplierUom);
+          return {
+            ...item,
+            qty: norm.normalizedQty,
+            unit: norm.normalizedUnit,
+            weightKg: norm.normalizedQty,
+            supplierQty: norm.supplierQty,
+            supplierUom: norm.supplierUom,
+          };
+        }
+        return item;
+      });
+      const po = await createPurchaseOrder(poData, normalizedItems, extraCosts || []);
+      if (po) {
+        await calculateAndSaveLandedCosts(po.id);
+        await learnSupplierMappings(poData.supplier, normalizedItems);
+      }
+      return po;
+    }),
+  update: publicProcedure
+    .input(z.object({
+      id: z.number(),
+      poNumber: z.string().optional(),
+      supplier: z.string().optional(),
+      supplierInvoiceNumber: z.string().nullable().optional(),
+      date: z.string().optional(),
+      expectedDate: z.string().nullable().optional(),
+      status: z.enum(["draft", "ordered", "received", "approved"]).optional(),
+      currency: z.string().optional(),
+      exchangeRate: z.number().optional(),
+      localCurrency: z.string().optional(),
+      paymentTerms: z.string().nullable().optional(),
+      paymentMethod: z.string().nullable().optional(),
+      paymentStatus: z.enum(["unpaid", "partial", "paid"]).optional(),
+      amountPaid: z.number().nullable().optional(),
+      paymentDate: z.string().nullable().optional(),
+      paymentReference: z.string().nullable().optional(),
+      notes: z.string().nullable().optional(),
+      items: z.array(poItemInput).optional(),
+      extraCosts: z.array(poExtraCostInput).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { id, items, extraCosts, ...poData } = input;
+      const normalizedItems = items?.map((item) => {
+        if (item.supplierUom && item.supplierQty) {
+          const norm = normalizeUom(item.supplierQty, item.supplierUom);
+          return {
+            ...item,
+            qty: norm.normalizedQty,
+            unit: norm.normalizedUnit,
+            weightKg: norm.normalizedQty,
+            supplierQty: norm.supplierQty,
+            supplierUom: norm.supplierUom,
+          };
+        }
+        return item;
+      });
+      const po = await updatePurchaseOrder(id, poData, normalizedItems, extraCosts);
+      if (po) {
+        await calculateAndSaveLandedCosts(id);
+        if (normalizedItems && poData.supplier) {
+          await learnSupplierMappings(poData.supplier, normalizedItems);
+        }
+      }
+      return po;
+    }),
+  delete: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(({ input }) => deletePurchaseOrder(input.id)),
+  setStatus: publicProcedure
+    .input(z.object({
+      id: z.number(),
+      status: z.enum(["draft", "ordered", "received", "approved"]),
+      receivedDate: z.string().nullable().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      await setPurchaseOrderStatus(input.id, input.status, input.receivedDate);
+      return { ok: true };
+    }),
+  approve: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input }) => {
+      await setPurchaseOrderStatus(input.id, "approved");
+      return { ok: true };
+    }),
+  recalcLanded: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(({ input }) => calculateAndSaveLandedCosts(input.id)),
+  supplierMappings: publicProcedure
+    .input(z.object({ supplierName: z.string().optional() }))
+    .query(({ input }) => getSupplierProductMappings(input.supplierName)),
+  normalizeUomPreview: publicProcedure
+    .input(z.object({ qty: z.number(), uom: z.string() }))
+    .query(({ input }) => normalizeUom(input.qty, input.uom)),
+  attachments: router({
+    add: publicProcedure
+      .input(z.object({
+        purchaseOrderId: z.number(),
+        fileUrl: z.string(),
+        fileName: z.string().nullable().optional(),
+        fileKey: z.string().nullable().optional(),
+        documentType: z.string().nullable().optional(),
+      }))
+      .mutation(({ input }) => addPoAttachment(input)),
+    delete: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deletePoAttachment(input.id);
+        return { ok: true };
+      }),
+  }),
+});
+
+// ─── Cost Invoices (Pool — "Fletes y Gastos") ──────────────────────────────
+
+const costInvoicesRouter = router({
+  list: publicProcedure.query(() => getAllCostInvoices()),
+  get: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .query(({ input }) => getCostInvoiceById(input.id)),
+  create: publicProcedure
+    .input(z.object({
+      invoiceNumber: z.string(),
+      supplier: z.string(),
+      costType: z.string(),
+      date: z.string(),
+      totalAmount: z.number(),
+      currency: z.string().optional(),
+      pdfUrl: z.string().nullable().optional(),
+      pdfFileName: z.string().nullable().optional(),
+      notes: z.string().nullable().optional(),
+      createdBy: z.string().nullable().optional(),
+    }))
+    .mutation(({ input }) => createCostInvoice(input)),
+  update: publicProcedure
+    .input(z.object({
+      id: z.number(),
+      invoiceNumber: z.string().optional(),
+      supplier: z.string().optional(),
+      costType: z.string().optional(),
+      date: z.string().optional(),
+      totalAmount: z.number().optional(),
+      currency: z.string().optional(),
+      pdfUrl: z.string().nullable().optional(),
+      pdfFileName: z.string().nullable().optional(),
+      notes: z.string().nullable().optional(),
+    }))
+    .mutation(({ input }) => {
+      const { id, ...data } = input;
+      return updateCostInvoice(id, data);
+    }),
+  delete: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(({ input }) => deleteCostInvoice(input.id)),
+  allocate: publicProcedure
+    .input(z.object({
+      costInvoiceId: z.number(),
+      purchaseOrderId: z.number(),
+      percentage: z.number().min(0).max(100).optional(),
+      amount: z.number().min(0).optional(),
+      notes: z.string().nullable().optional(),
+      exchangeRate: z.number().positive().nullable().optional(),
+    }).refine((d) => d.percentage || d.amount, {
+      message: "Either percentage or amount is required",
+    }))
+    .mutation(({ input }) =>
+      allocateCostInvoice(
+        input.costInvoiceId,
+        input.purchaseOrderId,
+        input.percentage || null,
+        input.amount || null,
+        input.notes,
+        input.exchangeRate,
+      ),
+    ),
+  deallocate: publicProcedure
+    .input(z.object({ allocationId: z.number() }))
+    .mutation(({ input }) => deallocateCostInvoice(input.allocationId)),
+  allocationsForPo: publicProcedure
+    .input(z.object({ purchaseOrderId: z.number() }))
+    .query(({ input }) => getCostInvoiceAllocationsForPo(input.purchaseOrderId)),
+});
+
 export const appRouter = router({
   personas: personasRouter,
   tarifas: tarifasRouter,
   facturas: facturasRouter,
   lotes: lotesRouter,
+  purchaseOrders: purchaseOrdersRouter,
+  costInvoices: costInvoicesRouter,
 });
 
 export type AppRouter = typeof appRouter;
