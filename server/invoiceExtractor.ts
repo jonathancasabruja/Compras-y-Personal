@@ -162,19 +162,32 @@ const PO_SCHEMA = {
 const PO_PROMPT_BASE = `You are processing a business invoice for Casa Bruja, a craft brewery + taproom in Panama. The same library holds supplier purchase invoices (hops, malt, packaging), logistics (freight/customs), taproom operations (food, beverages, cleaning supplies), and overhead (electricity, internet, rent, legal). Your first job is to CLASSIFY the invoice; your second job is to extract its details.
 
 CLASSIFICATION — pick exactly one category:
-- brewing_raw_materials — anything that becomes part of beer (hops, malt, yeast, adjuncts, chemicals added during brewing)
-- brewing_packaging — cans, bottles, labels, caps, kegs, shrink sleeves, 6-pack trays
-- brewing_equipment — brewhouse equipment, pumps, valves, replacement parts, CIP/sanitation chemicals
-- logistics — freight, shipping, customs brokerage, cargo insurance, import handling fees
-- taproom_food — food ingredients for the taproom kitchen (meat, vegetables, bread, condiments)
-- taproom_beverages — drinks NOT made by Casa Bruja (wine, spirits, sodas, juices for cocktails)
-- taproom_supplies — napkins, cleaning chemicals, disposables, uniforms, glassware
-- utilities — electricity, water, gas, internet, phone, cable
-- services — legal, accounting, marketing, software subscriptions, consulting, web hosting
-- rent_facility — rent, security services, pest control, janitorial
-- other — anything that doesn't clearly fit the above
+- brewing_raw_materials — INGREDIENTS that become part of the beer. Hops (pellet/T-90/whole cone), malt (base/specialty/crystal), yeast (liquid vials, dry sachets), adjuncts (honey, fruit purée, coffee, cacao, spices, lactose, oats, rice hulls), water-treatment salts added during brewing (gypsum, CaCl2).
+- brewing_packaging — containers that hold finished beer for sale. Empty cans, bottles, paper labels, crowns/caps, kegs, shrink sleeves, keg collars, PakTechs, 6-pack trays/carriers, tray dividers.
+- brewing_equipment — PRODUCTION EQUIPMENT and the chemicals that clean/sanitize it. Brewhouse hardware, fermenters, brite tanks, heat exchangers, pumps, valves, gaskets, clamps, tri-clamps, fittings, hose/tubing, pressure gauges, thermometers, filters & filter cartridges, sensors, motors, electrical components (PLCs, contactors), CIP chemicals (caustic, PAA/peracetic acid, Oxonia, acid anionic, San-Star, chlorinated detergents), tools used on production equipment.
+  → "Repuestos", "repair parts", "refacciones", "spare parts", "replacement parts" for brewery equipment ALL land here.
+- logistics — freight, shipping, customs brokerage, cargo insurance, import handling fees, line-haul, ocean/air freight.
+- taproom_food — food INGREDIENTS served in the taproom kitchen (meat, seafood, vegetables, bread, cheese, sauces, condiments, spices, oils).
+- taproom_beverages — drinks NOT made by Casa Bruja (wine, spirits, liquor, sodas, juice, mixers, non-alcoholic beverages for cocktails/service).
+- taproom_supplies — front-of-house disposables and cleaning supplies. Napkins, paper towels, trash bags, disposable cups, wrappers, to-go containers, cleaning chemicals used in the DINING AREA (not on production equipment), hand soap, dish soap, sanitizer wipes, uniforms, aprons, glassware, coasters.
+- utilities — electricity, water, gas, internet, phone, cable TV.
+- services — legal, accounting, marketing, software subscriptions (SaaS), consulting, web hosting, IT, advertising.
+- rent_facility — rent, security services, pest control, janitorial service contracts, building maintenance labor.
+- other — anything that doesn't clearly fit the above.
 
-Also produce a briefDescription (max 120 chars) like "Pellet hops shipment from BSG (Citra, Mosaic)" or "CFE electricity bill Mar 2026" or "IC Pan - pest control monthly".
+DISAMBIGUATION RULES (read before choosing):
+- If you see "repuesto", "refacción", "repair part", "spare part", "replacement" + any mechanical/electrical part → brewing_equipment. NEVER taproom_supplies.
+- Pumps, valves, motors, bearings, gaskets, o-rings, seals, hoses, fittings, sensors, PLCs, VFDs → brewing_equipment, ALWAYS.
+- Filter cartridges + filter housings → brewing_equipment (they filter beer/wort).
+- Chemicals used to sanitize production equipment (Oxonia, PAA, caustic, Star San, peracetic acid, acid anionic) → brewing_equipment.
+- Chemicals used to clean the bar/dining area (Pine-Sol, Fabuloso, bleach, dish soap) → taproom_supplies.
+- If the supplier is a brewery-equipment vendor (Ziemann, Czech, Prospero, GW Kent, ProBrew, Ska Fab, Five Star Chemicals, Birko) → almost always brewing_equipment.
+- If the supplier is a food distributor (Sysco, US Foods, Rey, Super99, Xtra) → taproom_food.
+- If the supplier is a hop/malt/yeast vendor (BSG, Yakima, Hopsteiner, Lupex, Great Western, Country Malt, Weyermann, Briess, Lallemand, White Labs, Wyeast) → brewing_raw_materials.
+- Electricity bills (ENSA, EDEMET, EDECHI), water bills (IDAAN), internet (Cable Onda, Más Móvil), phone (+507) → utilities.
+- If a PDF has BOTH products and freight/aduana/comision line items, classify by the PRODUCTS — the freight lines go into extraCosts, not the category.
+
+Also produce a briefDescription (max 120 chars) like "Pellet hops shipment from BSG (Citra, Mosaic)" or "ENSA electricity bill Mar 2026" or "Repuestos bomba centrífuga — Ziemann" or "IC Pan - pest control monthly".
 
 FIELD EXTRACTION RULES (applies to all categories; blank out fields that don't apply):
 1. QUANTITY is WEIGHT in LBS or KG for brewing_raw_materials (hops, malt, yeast). Look for "Stock Qty", "Net Weight", or values ending in "LBS"/"KG" (e.g. "44.0LBS").
@@ -249,7 +262,11 @@ export async function extractPoFromPdf(
   const openai = client();
   const prompt = buildPoPrompt(ctx);
   const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    // Upgraded from gpt-4o-mini → gpt-4o on 2026-04-22. Cost per invoice
+    // goes from ~$0.002 to ~$0.02, but user reported classification errors
+    // on production repair parts (miscategorized as cleaning supplies).
+    // gpt-4o reads messy PDFs + follows classification rules much better.
+    model: "gpt-4o",
     messages: [
       {
         role: "user",
@@ -361,7 +378,11 @@ export async function extractCostInvoiceFromPdf(
 ): Promise<ExtractedCostInvoice> {
   const openai = client();
   const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    // Upgraded from gpt-4o-mini → gpt-4o on 2026-04-22. Cost per invoice
+    // goes from ~$0.002 to ~$0.02, but user reported classification errors
+    // on production repair parts (miscategorized as cleaning supplies).
+    // gpt-4o reads messy PDFs + follows classification rules much better.
+    model: "gpt-4o",
     messages: [
       {
         role: "user",
