@@ -707,3 +707,242 @@ ${JSON.stringify(
   }
   return { assistantText, patch };
 }
+
+// ─── PO Correction chat ───────────────────────────────────────────────────
+// Same pattern as correctInvoiceWithChat but for a Purchase Order. Knows
+// about PO-specific fields (poNumber, supplierInvoiceNumber, items with
+// productCode/qty/price, extraCosts) and is catalog-aware — when the
+// operator says "that's Mosaic pellets" Claude will propose the canonical
+// internal product code (RHO-MOSA-PE) if present in the catalog context.
+
+const PO_PATCH_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    supplier: { type: "string" },
+    supplierInvoiceNumber: { type: "string" },
+    date: { type: "string", description: "YYYY-MM-DD" },
+    expectedDate: { type: "string", description: "YYYY-MM-DD" },
+    currency: { type: "string" },
+    notes: { type: "string" },
+    items: {
+      type: "array",
+      description: "Complete replacement list of PO line items. Only provide this when the items need to change.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          productCode: { type: "string", description: "Casa Bruja internal code from catalog when available (e.g. RHO-MOSA-PE), otherwise the supplier's raw code." },
+          productDescription: { type: "string" },
+          qty: { type: "number" },
+          unit: { type: "string", description: "LBS, KG, EA, etc." },
+          unitPrice: { type: "number" },
+          totalPrice: { type: "number" },
+          supplierLotNumber: { type: ["string", "null"] },
+        },
+        required: ["productCode", "productDescription", "qty", "unit", "unitPrice", "totalPrice", "supplierLotNumber"],
+      },
+    },
+    extraCosts: {
+      type: "array",
+      description: "Complete replacement list of extra costs (freight, customs, etc.). Only provide when they need to change.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          costType: { type: "string", enum: ["freight", "customs", "insurance", "handling", "comisiones", "other"] },
+          description: { type: "string" },
+          amount: { type: "number" },
+          allocationMethod: { type: "string", enum: ["value", "weight", "volume", "qty", "manual"] },
+        },
+        required: ["costType", "description", "amount", "allocationMethod"],
+      },
+    },
+  },
+} as const;
+
+export type PoCorrectionPatch = Partial<{
+  supplier: string;
+  supplierInvoiceNumber: string;
+  date: string;
+  expectedDate: string;
+  currency: string;
+  notes: string;
+  items: Array<{
+    productCode: string;
+    productDescription: string;
+    qty: number;
+    unit: string;
+    unitPrice: number;
+    totalPrice: number;
+    supplierLotNumber: string | null;
+  }>;
+  extraCosts: Array<{
+    costType: string;
+    description: string;
+    amount: number;
+    allocationMethod: string;
+  }>;
+}>;
+
+export async function correctPoWithChat(opts: {
+  /** Attached invoice PDF (first one) encoded base64. Null when the PO
+   *  has no attachment — the chat still works, just without visual
+   *  reference. */
+  pdfBase64: string | null;
+  currentPo: {
+    poNumber: string;
+    supplier: string;
+    supplierInvoiceNumber: string | null;
+    date: string;
+    expectedDate: string | null;
+    currency: string | null;
+    notes: string | null;
+    items: Array<{
+      productCode: string;
+      productDescription: string | null;
+      qty: number;
+      unit: string | null;
+      unitPrice: number;
+      totalPrice: number;
+      supplierLotNumber: string | null;
+    }>;
+    extraCosts: Array<{
+      costType: string;
+      description: string;
+      amount: number;
+      allocationMethod: string;
+    }>;
+  };
+  catalog?: Array<{ productCode: string; name: string; category: string; unit: string }>;
+  supplierMappings?: Array<{
+    supplierName: string;
+    supplierDescription: string;
+    internalProductCode: string;
+    timesUsed: number;
+  }>;
+  chatHistory: ChatMessage[];
+  userMessage: string;
+}): Promise<{ assistantText: string; patch: PoCorrectionPatch | null }> {
+  const backend = getExtractorBackend();
+  if (backend !== "claude-sonnet") {
+    throw new Error(
+      "La corrección por chat requiere ANTHROPIC_API_KEY. Configúrala en Railway.",
+    );
+  }
+
+  const anthropic = anthropicClient();
+
+  // Build the catalog section of the system prompt — this is the key to
+  // internal-code suggestion. Group by category so Claude can navigate.
+  let catalogBlock = "";
+  if (opts.catalog && opts.catalog.length > 0) {
+    const byCategory = new Map<string, Array<{ productCode: string; name: string; unit: string }>>();
+    for (const row of opts.catalog) {
+      if (!byCategory.has(row.category)) byCategory.set(row.category, []);
+      byCategory.get(row.category)!.push(row);
+    }
+    const blocks: string[] = [];
+    for (const [cat, rows] of byCategory) {
+      blocks.push(
+        `### ${cat.toUpperCase()}\n` +
+          rows.map((r) => `  ${r.productCode}  —  ${r.name}  (${r.unit})`).join("\n"),
+      );
+    }
+    catalogBlock = "\n\nCATÁLOGO INTERNO — usa estos product_code exactos cuando una línea del operador coincida (prefiere fuzzy match por nombre):\n" + blocks.join("\n\n");
+  }
+
+  let mappingsBlock = "";
+  if (opts.supplierMappings && opts.supplierMappings.length > 0) {
+    const hints = opts.supplierMappings
+      .slice(0, 60)
+      .map((m) => `  "${m.supplierName}" → "${m.supplierDescription}" = ${m.internalProductCode} (visto ${m.timesUsed}×)`)
+      .join("\n");
+    mappingsBlock = "\n\nMAPEOS APRENDIDOS DE PROVEEDORES — cuando una línea coincida con uno de estos, usa el código mapeado:\n" + hints;
+  }
+
+  const systemPrompt = `Eres un asistente de corrección para las Órdenes de Compra de Casa Bruja. El operador del área de compras vio un error en los datos extraídos por IA y te dice qué arreglar.
+
+Recibirás:
+1. El PDF original de la factura del proveedor (re-léelo — no confíes en lo que se extrajo antes)
+2. Los datos ACTUALES de la OC (puede tener errores)
+3. El historial de la conversación
+4. El mensaje más reciente del operador
+
+Reglas:
+- Re-lee el PDF cuidadosamente. NUNCA inventes códigos de producto, precios o cantidades. Si un campo no es visible, dilo.
+- Cuando el operador diga "es lúpulo Mosaic", "es malta Pilsen", etc. — busca en el CATÁLOGO INTERNO debajo y propón el código canónico correspondiente (ej. RHO-MOSA-PE).
+- Para materias primas (lúpulo, malta, levadura), la cantidad debe ser PESO (LBS o KG), no conteo de cajas.
+- Responde en español, conversacional. Los nombres de productos pueden quedar en inglés si así aparecen en la factura.
+- Si el operador pide un cambio, llama al tool apply_po_corrections con SOLO los campos que cambian. Si solo pregunta algo, responde con texto y NO llames al tool.
+- Al llamar el tool con items o extraCosts, envía la LISTA COMPLETA (reemplaza todas las líneas), no solo las que cambian.
+
+DATOS ACTUALES DE LA OC (pueden estar mal):
+${JSON.stringify(opts.currentPo, null, 2)}${catalogBlock}${mappingsBlock}`;
+
+  const messages: Anthropic.MessageParam[] = [];
+
+  // First user turn: PDF attached (if we have it) + seed text.
+  const firstHistoryUser = opts.chatHistory.find((m) => m.role === "user");
+  const introText = firstHistoryUser
+    ? firstHistoryUser.text
+    : "Aquí está la factura del proveedor. Voy a indicarte correcciones a la OC.";
+
+  if (opts.pdfBase64) {
+    messages.push({
+      role: "user",
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: cleanBase64(opts.pdfBase64),
+          },
+        },
+        { type: "text", text: introText },
+      ],
+    });
+  } else {
+    messages.push({ role: "user", content: introText + "\n\n(No hay PDF adjunto — trabaja solo con los datos actuales.)" });
+  }
+
+  let seenFirstUser = false;
+  for (const m of opts.chatHistory) {
+    if (m.role === "user" && !seenFirstUser) {
+      seenFirstUser = true;
+      continue;
+    }
+    messages.push({ role: m.role, content: m.text });
+  }
+
+  messages.push({ role: "user", content: opts.userMessage });
+
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-5",
+    max_tokens: 6144,
+    system: systemPrompt,
+    tools: [
+      {
+        name: "apply_po_corrections",
+        description:
+          "Actualiza campos específicos de la OC. Solo incluye los que cambian. Para items/extraCosts, envía la lista completa.",
+        input_schema: toClaudeSchema(PO_PATCH_SCHEMA) as Anthropic.Tool.InputSchema,
+      },
+    ],
+    messages,
+  });
+
+  let assistantText = "";
+  let patch: PoCorrectionPatch | null = null;
+  for (const block of response.content as any[]) {
+    if (block.type === "text") assistantText += block.text;
+    else if (block.type === "tool_use" && block.name === "apply_po_corrections") {
+      patch = block.input as PoCorrectionPatch;
+    }
+  }
+  if (!assistantText) {
+    assistantText = patch ? "Listo — apliqué las correcciones." : "(respuesta vacía)";
+  }
+  return { assistantText, patch };
+}

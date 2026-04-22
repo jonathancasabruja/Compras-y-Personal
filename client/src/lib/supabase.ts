@@ -957,6 +957,23 @@ export async function invoiceCorrectionChat(
   return trpcMutate("invoiceLibrary.correctionChat", { invoiceId, message });
 }
 
+/**
+ * PO correction chat — catalog-aware. Claude suggests internal codes
+ * (e.g. RHO-MOSA-PE for Mosaic pellets) when the operator describes a
+ * line. Applies scalar + items + extras patches atomically server-side.
+ */
+export async function purchaseOrderCorrectionChat(
+  purchaseOrderId: number,
+  message: string,
+): Promise<{
+  assistantText: string;
+  patchApplied: unknown;
+  chatHistory: CorrectionChatMessage[];
+  po: unknown;
+}> {
+  return trpcMutate("purchaseOrders.correctionChat", { purchaseOrderId, message });
+}
+
 export async function isInvoiceLibraryReady(): Promise<{ configured: boolean; storage: boolean }> {
   const r = await trpcQuery<{ configured: boolean; storage: boolean }>(
     "invoiceLibrary.extractorConfigured",

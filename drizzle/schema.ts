@@ -115,6 +115,12 @@ export const purchaseOrders = pgTable("purchase_orders", {
   totalCost: real("total_cost").default(0),
   totalLandedCost: real("total_landed_cost").default(0),
   createdBy: varchar("created_by", { length: 100 }),
+  // AI correction chat per PO. Same shape as supplier_invoices.correction_chat:
+  // Array of { role: 'user'|'assistant', text, at }. When the operator spots
+  // a mistake on the PO (wrong supplier, wrong qty, wrong internal code) they
+  // chat with Claude to fix it — Claude re-reads the attached invoice PDF
+  // when available and returns a structured patch.
+  correctionChat: jsonb("correction_chat").default([]),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

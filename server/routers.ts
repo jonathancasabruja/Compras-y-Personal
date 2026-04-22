@@ -47,6 +47,7 @@ import {
   extractPoFromPdf,
   extractCostInvoiceFromPdf,
   correctInvoiceWithChat,
+  correctPoWithChat,
   isExtractorConfigured,
   INVOICE_CATEGORIES,
   type InvoiceCategory,
@@ -661,6 +662,163 @@ const purchaseOrdersRouter = router({
         manualCategoryExamples,
       });
     }),
+  /**
+   * AI correction chat for a Purchase Order. Operator tells Claude what's
+   * wrong; Claude re-reads the attached invoice PDF (if any) and returns
+   * a structured patch that we apply atomically to the PO + items + extras.
+   * Catalog-aware: when the operator says "Mosaic pellets" Claude will
+   * propose the canonical internal code from the brewing catalog.
+   */
+  correctionChat: publicProcedure
+    .input(
+      z.object({
+        purchaseOrderId: z.number(),
+        message: z.string().min(1).max(4000),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const po = await getPurchaseOrderById(input.purchaseOrderId);
+      if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "OC no encontrada" });
+
+      // Try to pick a PDF attachment so Claude can re-read the source. If
+      // no attachment exists, we proceed without the PDF — the chat still
+      // works, just with less visual grounding.
+      const atts = await getPoAttachments(input.purchaseOrderId);
+      const pdfAtt = atts.find(
+        (a) =>
+          a.fileKey &&
+          (a.fileKey.toLowerCase().endsWith(".pdf") ||
+            (a.fileName || "").toLowerCase().endsWith(".pdf")),
+      );
+      const pdfBytes = pdfAtt?.fileKey
+        ? await storageDownload(pdfAtt.fileKey).catch(() => null)
+        : null;
+
+      const chatHistory =
+        ((po as any).correctionChat as Array<{ role: "user" | "assistant"; text: string; at: string }>) ?? [];
+
+      // Feed the same catalog + supplier mappings that new-OC extraction
+      // uses, so Claude can propose internal codes (RHO-MOSA-PE, etc.).
+      const [catalog, supplierMappings] = await Promise.all([
+        listCatalogForExtraction().catch(() => []),
+        listSupplierMappingsForExtraction().catch(() => []),
+      ]);
+
+      let result;
+      try {
+        result = await correctPoWithChat({
+          pdfBase64: pdfBytes ? pdfBytes.toString("base64") : null,
+          currentPo: {
+            poNumber: po.poNumber,
+            supplier: po.supplier,
+            supplierInvoiceNumber: po.supplierInvoiceNumber ?? null,
+            date: po.date,
+            expectedDate: po.expectedDate ?? null,
+            currency: po.currency ?? null,
+            notes: po.notes ?? null,
+            items: (po.items ?? []).map((it: any) => ({
+              productCode: it.productCode,
+              productDescription: it.productDescription ?? null,
+              qty: it.qty,
+              unit: it.unit ?? null,
+              unitPrice: it.baseCostPerUnit ?? 0,
+              totalPrice: it.baseTotalCost ?? 0,
+              supplierLotNumber: it.supplierLotNumber ?? null,
+            })),
+            extraCosts: (po.extraCosts ?? []).map((ec: any) => ({
+              costType: ec.costType,
+              description: ec.description ?? "",
+              amount: ec.amount ?? 0,
+              allocationMethod: ec.allocationMethod ?? "value",
+            })),
+          },
+          catalog: catalog.map((c: any) => ({
+            productCode: c.productCode,
+            name: c.name,
+            category: c.category,
+            unit: c.unit,
+          })),
+          supplierMappings,
+          chatHistory,
+          userMessage: input.message.trim(),
+        });
+      } catch (err: any) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: err?.message ?? "Error en la corrección con IA",
+        });
+      }
+
+      const now = new Date().toISOString();
+      const newHistory = [
+        ...chatHistory,
+        { role: "user" as const, text: input.message.trim(), at: now },
+        { role: "assistant" as const, text: result.assistantText, at: now },
+      ];
+
+      // Apply the patch. Two flavours:
+      //  (a) scalar fields → forwarded to updatePurchaseOrder
+      //  (b) items / extraCosts → passed through (updatePurchaseOrder
+      //      replaces the lists when provided)
+      const patch = result.patch || {};
+      const poUpdate: Record<string, unknown> = {};
+      if (patch.supplier !== undefined) poUpdate.supplier = patch.supplier;
+      if (patch.supplierInvoiceNumber !== undefined) poUpdate.supplierInvoiceNumber = patch.supplierInvoiceNumber;
+      if (patch.date !== undefined) poUpdate.date = patch.date;
+      if (patch.expectedDate !== undefined) poUpdate.expectedDate = patch.expectedDate;
+      if (patch.currency !== undefined) poUpdate.currency = patch.currency;
+      if (patch.notes !== undefined) poUpdate.notes = patch.notes;
+
+      // Always persist chat history (even when no patch fields changed).
+      // Saving correction_chat via direct DB update since the main
+      // updatePurchaseOrder helper doesn't know about this column yet.
+      const db = reqDb();
+      await db.execute(drizzleSql`
+        UPDATE purchase_orders
+        SET correction_chat = ${drizzleSql.raw(`'${JSON.stringify(newHistory).replace(/'/g, "''")}'::jsonb`)},
+            updated_at = NOW()
+        WHERE id = ${input.purchaseOrderId}
+      `);
+
+      // If the AI returned item / extra changes, send them through the
+      // standard update path so landed costs recalculate.
+      const items = patch.items?.map((it) => ({
+        productCode: it.productCode,
+        productDescription: it.productDescription,
+        qty: it.qty,
+        unit: it.unit,
+        baseCostPerUnit: it.unitPrice,
+        baseTotalCost: it.totalPrice,
+        supplierLotNumber: it.supplierLotNumber,
+      }));
+      const extras = patch.extraCosts?.map((ec) => ({
+        costType: ec.costType,
+        description: ec.description,
+        amount: ec.amount,
+        allocationMethod: ec.allocationMethod,
+      }));
+
+      let updatedPo = po;
+      const hasScalarUpdate = Object.keys(poUpdate).length > 0;
+      if (hasScalarUpdate || items || extras) {
+        const u = await updatePurchaseOrder(
+          input.purchaseOrderId,
+          poUpdate as any,
+          items as any,
+          extras as any,
+        );
+        if (u) updatedPo = u;
+        if (u) await calculateAndSaveLandedCosts(input.purchaseOrderId);
+      }
+
+      return {
+        assistantText: result.assistantText,
+        patchApplied: result.patch,
+        chatHistory: newHistory,
+        po: updatedPo,
+      };
+    }),
+
   attachments: router({
     list: publicProcedure
       .input(z.object({ purchaseOrderId: z.number() }))
