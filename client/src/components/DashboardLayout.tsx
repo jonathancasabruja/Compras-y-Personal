@@ -61,7 +61,9 @@ const navGroups: { label: string; items: NavItem[] }[] = [
         label: "Servicios Profesionales",
         path: "/servicios-profesionales",
       },
-      { icon: Users, label: "Personal Eventual", path: "/personal" },
+      // 'Personal Eventual' was merged into Servicios Profesionales on
+      // 2026-04-22 — they were the same concept. Route still lives so
+      // existing bookmarks don't 404, but no longer in the sidebar.
     ],
   },
 ];
