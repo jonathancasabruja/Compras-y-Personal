@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./routers";
 import { createContext } from "./trpc";
+import { handleEmailIngest, handleWhatsappIngest } from "./ingest";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,7 +39,19 @@ function basicAuth(expectedPassword: string) {
 async function startServer() {
   const app = express();
   const server = createServer(app);
-  app.use(express.json({ limit: "10mb" }));
+
+  // Email inbound (Postmark/SendGrid) can send payloads up to a few MB of
+  // base64 PDFs. 25 MB covers the common 10 MB limit from most providers
+  // even after base64 inflation.
+  app.use(express.json({ limit: "25mb" }));
+  // Twilio WhatsApp posts form-urlencoded
+  app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+
+  // Ingestion routes go BEFORE the Basic Auth guard so Postmark/Twilio can
+  // reach them without credentials. Each route validates an INGEST_SECRET
+  // query/header and fails closed when the secret isn't configured.
+  app.post("/ingest/email", handleEmailIngest);
+  app.post("/ingest/whatsapp", handleWhatsappIngest);
 
   const password = process.env.APP_PASSWORD;
   if (password) {

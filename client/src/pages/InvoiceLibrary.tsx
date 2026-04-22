@@ -67,7 +67,53 @@ export default function InvoiceLibraryPage() {
   const [uploading, setUploading] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [readiness, setReadiness] = useState<{ configured: boolean; storage: boolean } | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
+  // Page-wide drag-drop: wire up window listeners so dropping anywhere on the
+  // page ingests files (much easier than targeting a small zone). The drop
+  // overlay kicks in on the first dragenter and clears on dragleave/drop.
+  useEffect(() => {
+    let dragCounter = 0;
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes("Files");
+
+    const onEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounter++;
+      if (dragCounter === 1) setDragActive(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragCounter = Math.max(0, dragCounter - 1);
+      if (dragCounter === 0) setDragActive(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounter = 0;
+      setDragActive(false);
+      const files = e.dataTransfer?.files;
+      if (files && files.length > 0) doUpload(files);
+    };
+
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = async () => {
     setLoading(true);
@@ -166,6 +212,32 @@ export default function InvoiceLibraryPage() {
 
   return (
     <div style={{ padding: "1.5rem", maxWidth: 1300, margin: "0 auto", display: "grid", gridTemplateColumns: "260px 1fr", gap: "1rem", alignItems: "start" }}>
+      {/* Full-window drop overlay — wired up in useEffect */}
+      {dragActive && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "oklch(0.55 0.18 260 / 0.12)",
+            border: "3px dashed oklch(0.55 0.18 260)",
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+            backdropFilter: "blur(2px)",
+          }}
+        >
+          <div style={{ background: "white", padding: "1.5rem 2rem", borderRadius: 12, boxShadow: "0 4px 20px oklch(0.3 0 0 / 0.15)", textAlign: "center" }}>
+            <Upload size={36} style={{ color: "oklch(0.55 0.18 260)", margin: "0 auto 0.5rem", display: "block" }} />
+            <div style={{ fontSize: "1.125rem", fontWeight: 700, color: INK }}>Suelta los PDFs aquí</div>
+            <div style={{ fontSize: "0.8125rem", color: MUTED, marginTop: 4 }}>
+              Se comprimen, clasifican y archivan automáticamente.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header spans */}
       <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "1rem", flexWrap: "wrap" }}>
         <div>
