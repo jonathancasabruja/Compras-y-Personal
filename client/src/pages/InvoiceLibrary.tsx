@@ -19,11 +19,13 @@ import {
   uploadToInvoiceLibrary,
   updateInvoiceInLibrary,
   deleteInvoiceFromLibrary,
+  invoiceCorrectionChat,
   isInvoiceLibraryReady,
   INVOICE_CATEGORIES,
   CATEGORY_LABELS,
   type InvoiceCategory,
   type SupplierInvoice,
+  type CorrectionChatMessage,
 } from "@/lib/supabase";
 import { compressPdfClientSide, formatBytes } from "@/lib/pdfCompress";
 
@@ -592,6 +594,10 @@ function InvoiceDetailDrawer({
               )}
             </div>
           )}
+
+          {/* AI correction chat — operator tells Claude what's wrong and
+              Claude re-reads the PDF + applies a structured patch. */}
+          <CorrectionChat invoiceId={invoice.id} initialChat={invoice.correctionChat ?? []} onChanged={onChanged} />
         </div>
 
         <div style={{ padding: "0.75rem 1.25rem", borderTop: `1px solid ${BORDER}`, display: "flex", gap: "0.5rem", justifyContent: "space-between" }}>
@@ -606,6 +612,172 @@ function InvoiceDetailDrawer({
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// AI correction chat — operator talks to Claude about what's wrong in the
+// extracted fields and Claude re-reads the PDF + applies a structured patch.
+// Persisted per-invoice so the thread has history.
+// ───────────────────────────────────────────────────────────────────────────
+
+function CorrectionChat({
+  invoiceId,
+  initialChat,
+  onChanged,
+}: {
+  invoiceId: number;
+  initialChat: CorrectionChatMessage[];
+  onChanged: () => Promise<void>;
+}) {
+  const [chat, setChat] = useState<CorrectionChatMessage[]>(initialChat ?? []);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [chat.length]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    // Optimistically append the user's message so the UI feels snappy.
+    const now = new Date().toISOString();
+    setChat((c) => [...c, { role: "user", text, at: now }]);
+    setDraft("");
+    try {
+      const res = await invoiceCorrectionChat(invoiceId, text);
+      setChat(res.chatHistory);
+      // If the AI applied a patch, refresh the parent so the fields
+      // above the chat reflect the new values.
+      if (res.patchApplied) {
+        toast.success("Campos actualizados por la IA");
+        await onChanged();
+      }
+    } catch (e: any) {
+      toast.error(e?.message ?? "Error con la corrección");
+      // Roll back the optimistic user message on failure.
+      setChat((c) => c.slice(0, -1));
+      setDraft(text);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: "1.25rem", border: `1px solid ${BORDER}`, borderRadius: 8, background: "oklch(0.99 0 0)" }}>
+      <div
+        style={{
+          padding: "0.625rem 0.875rem",
+          borderBottom: `1px solid ${BORDER}`,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "oklch(0.97 0.02 260)",
+        }}
+      >
+        <Sparkles size={14} style={{ color: "oklch(0.55 0.18 260)" }} />
+        <div>
+          <div style={{ fontSize: "0.75rem", fontWeight: 700, color: INK }}>Corrección con IA</div>
+          <div style={{ fontSize: "0.65rem", color: MUTED }}>
+            Dile qué está mal y la IA re-leerá el PDF. Los cambios se aplican al instante.
+          </div>
+        </div>
+      </div>
+
+      {chat.length > 0 && (
+        <div
+          ref={scrollRef}
+          style={{
+            maxHeight: 260,
+            overflowY: "auto",
+            padding: "0.625rem 0.875rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          {chat.map((m, i) => (
+            <div
+              key={i}
+              style={{
+                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                maxWidth: "85%",
+                background: m.role === "user" ? "oklch(0.93 0.07 260)" : "oklch(0.96 0 0)",
+                color: INK,
+                border: `1px solid ${m.role === "user" ? "oklch(0.85 0.1 260)" : BORDER}`,
+                borderRadius: 10,
+                padding: "0.5rem 0.625rem",
+                fontSize: "0.8125rem",
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.6rem",
+                  color: MUTED,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                  fontWeight: 700,
+                  marginBottom: 3,
+                }}
+              >
+                {m.role === "user" ? "Tú" : "IA (Sonnet)"}
+              </div>
+              {m.text}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ padding: "0.625rem 0.875rem", borderTop: chat.length > 0 ? `1px solid ${BORDER}` : "none", display: "flex", gap: 6 }}>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={
+            chat.length === 0
+              ? 'ej: "La línea 1 es un motor Panasonic M81X25GV4GGA a $188.99, no un gear. La línea 2 es el gear MX8G50B a $140."'
+              : "Escribe otra corrección…"
+          }
+          rows={2}
+          disabled={sending}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          style={{
+            flex: 1,
+            padding: "0.4375rem 0.625rem",
+            border: `1px solid ${BORDER}`,
+            borderRadius: 6,
+            fontSize: "0.8125rem",
+            fontFamily: "inherit",
+            resize: "vertical",
+            background: sending ? "oklch(0.95 0 0)" : "white",
+            color: INK,
+          }}
+        />
+        <button
+          onClick={send}
+          disabled={sending || !draft.trim()}
+          style={{
+            ...btnPrimary,
+            opacity: sending || !draft.trim() ? 0.5 : 1,
+            cursor: sending || !draft.trim() ? "not-allowed" : "pointer",
+            alignSelf: "flex-end",
+          }}
+        >
+          {sending ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Sparkles size={14} />}
+          Enviar
+        </button>
       </div>
     </div>
   );

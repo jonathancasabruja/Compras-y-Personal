@@ -273,6 +273,10 @@ export const supplierInvoices = pgTable("supplier_invoices", {
   usedInCostInvoiceId: integer("used_in_cost_invoice_id"),
   notes: text("notes"),
   uploadedBy: varchar("uploaded_by", { length: 100 }),
+  // Human-AI correction chat. Array of { role: 'user'|'assistant', text, at }.
+  // Used when the operator spots a mistake in the extracted fields and tells
+  // the AI to fix it. Kept per-invoice so the conversation has full context.
+  correctionChat: jsonb("correction_chat").default([]),
   uploadedAt: timestamp("uploaded_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

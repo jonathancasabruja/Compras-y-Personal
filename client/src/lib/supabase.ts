@@ -910,6 +910,12 @@ export const CATEGORY_LABELS: Record<InvoiceCategory, { es: string; group: "brew
   other:                 { es: "Otro",                group: "other" },
 };
 
+export interface CorrectionChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  at: string;
+}
+
 export interface SupplierInvoice {
   id: number;
   fileUrl: string;
@@ -929,8 +935,26 @@ export interface SupplierInvoice {
   usedInCostInvoiceId: number | null;
   notes: string | null;
   uploadedBy: string | null;
+  correctionChat: CorrectionChatMessage[] | null;
   uploadedAt: string;
   updatedAt: string;
+}
+
+/**
+ * Send a correction message to the AI. Returns the assistant's reply plus
+ * the updated invoice (in case the AI applied a patch). The chat history
+ * is persisted server-side so the next call has full context.
+ */
+export async function invoiceCorrectionChat(
+  invoiceId: number,
+  message: string,
+): Promise<{
+  assistantText: string;
+  patchApplied: unknown;
+  invoice: SupplierInvoice | null;
+  chatHistory: CorrectionChatMessage[];
+}> {
+  return trpcMutate("invoiceLibrary.correctionChat", { invoiceId, message });
 }
 
 export async function isInvoiceLibraryReady(): Promise<{ configured: boolean; storage: boolean }> {

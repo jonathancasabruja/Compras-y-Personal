@@ -42,10 +42,11 @@ import {
   listCatalogForExtraction,
   listSupplierMappingsForExtraction,
 } from "./purchasingDb";
-import { storagePut, storageDelete, isStorageConfigured } from "./storage";
+import { storagePut, storageDelete, storageDownload, isStorageConfigured } from "./storage";
 import {
   extractPoFromPdf,
   extractCostInvoiceFromPdf,
+  correctInvoiceWithChat,
   isExtractorConfigured,
   INVOICE_CATEGORIES,
   type InvoiceCategory,
@@ -955,6 +956,97 @@ const invoiceLibraryRouter = router({
     .mutation(async ({ input }) => {
       await linkInvoiceToCostInvoice(input.invoiceId, input.costInvoiceId);
       return { ok: true };
+    }),
+
+  /**
+   * AI correction chat. Operator talks to Claude about what's wrong with
+   * the extracted fields; Claude replies + (optionally) returns a patch
+   * that we apply to the row. Full conversation is persisted so the next
+   * message has context.
+   */
+  correctionChat: publicProcedure
+    .input(
+      z.object({
+        invoiceId: z.number(),
+        message: z.string().min(1).max(4000),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const invoice = await getSupplierInvoice(input.invoiceId);
+      if (!invoice) throw new TRPCError({ code: "NOT_FOUND", message: "Factura no encontrada" });
+
+      // Re-fetch the PDF from storage. We need the raw bytes to feed Claude.
+      const pdfBytes = await storageDownload(invoice.fileKey).catch(() => null);
+      if (!pdfBytes) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "No se pudo descargar el PDF original de Supabase Storage. Verifica SUPABASE_SERVICE_ROLE_KEY.",
+        });
+      }
+
+      const chatHistory = (invoice.correctionChat as Array<{ role: "user" | "assistant"; text: string; at: string }>) ?? [];
+      const userMessage = input.message.trim();
+
+      let result;
+      try {
+        result = await correctInvoiceWithChat({
+          pdfBase64: pdfBytes.toString("base64"),
+          currentData: {
+            supplier: invoice.supplier,
+            invoiceNumber: invoice.invoiceNumber,
+            invoiceDate: invoice.invoiceDate,
+            totalAmount: invoice.totalAmount,
+            currency: invoice.currency,
+            category: invoice.category,
+            briefDescription: invoice.briefDescription,
+            extractedData: invoice.extractedData,
+          },
+          chatHistory,
+          userMessage,
+        });
+      } catch (err: any) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: err?.message ?? "Error en la corrección con IA",
+        });
+      }
+
+      const now = new Date().toISOString();
+      const newHistory = [
+        ...chatHistory,
+        { role: "user" as const, text: userMessage, at: now },
+        { role: "assistant" as const, text: result.assistantText, at: now },
+      ];
+
+      // Persist the chat + apply the patch atomically. Any field the AI
+      // returned overrides the current value; items go into extracted_data
+      // so the "DATOS EXTRAÍDOS POR IA" panel reflects the fix.
+      const patch = result.patch || {};
+      const dbPatch: Record<string, unknown> = {
+        correctionChat: newHistory,
+      };
+      if (patch.supplier !== undefined) dbPatch.supplier = patch.supplier;
+      if (patch.invoiceNumber !== undefined) dbPatch.invoiceNumber = patch.invoiceNumber;
+      if (patch.invoiceDate !== undefined) dbPatch.invoiceDate = patch.invoiceDate;
+      if (patch.currency !== undefined) dbPatch.currency = patch.currency;
+      if (patch.totalAmount !== undefined) dbPatch.totalAmount = patch.totalAmount;
+      if (patch.category !== undefined) {
+        dbPatch.category = patch.category;
+        dbPatch.categoryWasManual = true;
+      }
+      if (patch.briefDescription !== undefined) dbPatch.briefDescription = patch.briefDescription;
+      if (patch.items !== undefined) {
+        const prev = (invoice.extractedData as Record<string, unknown>) || {};
+        dbPatch.extractedData = { ...prev, items: patch.items };
+      }
+      const updated = await updateSupplierInvoice(input.invoiceId, dbPatch as any);
+      return {
+        assistantText: result.assistantText,
+        patchApplied: result.patch,
+        invoice: updated,
+        chatHistory: newHistory,
+      };
     }),
 });
 

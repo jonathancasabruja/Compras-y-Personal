@@ -83,6 +83,26 @@ export async function storageGet(relKey: string): Promise<{ key: string; url: st
   return { key, url: pub?.publicUrl ?? "" };
 }
 
+/**
+ * Fetch the raw bytes of a stored object. Used by the AI correction chat
+ * so we can re-send the PDF to Claude without asking the client to
+ * re-upload it. Returns null if storage isn't configured or the download
+ * fails.
+ */
+export async function storageDownload(relKey: string): Promise<Buffer | null> {
+  const key = normalizeKey(relKey);
+  const client = getClient();
+  if (!client) return null;
+  const { data, error } = await client.storage.from(BUCKET).download(key);
+  if (error || !data) {
+    console.warn(`[storage] download failed for ${key}: ${error?.message ?? "no data"}`);
+    return null;
+  }
+  // Blob → ArrayBuffer → Buffer
+  const arrayBuf = await data.arrayBuffer();
+  return Buffer.from(arrayBuf);
+}
+
 export async function storageDelete(relKey: string): Promise<void> {
   const key = normalizeKey(relKey);
   const client = getClient();

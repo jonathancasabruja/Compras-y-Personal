@@ -517,3 +517,193 @@ export async function extractCostInvoiceFromPdf(
     "cost_invoice_extraction",
   );
 }
+
+// ─── Correction chat ────────────────────────────────────────────────────────
+// When the operator spots a mistake in an already-extracted invoice, they
+// open a chat inside the invoice modal and tell the AI what's wrong. We
+// re-send the PDF + current extracted state + chat history + new message,
+// Claude responds with an explanation AND (optionally) a structured patch
+// to apply to the stored row.
+
+export type ChatMessage = { role: "user" | "assistant"; text: string; at: string };
+
+/** Fields the correction tool is allowed to modify. Deliberately narrow —
+ *  we don't let the AI change uploadedBy, fileUrl, etc. */
+const CORRECTION_PATCH_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    supplier: { type: "string", description: "Canonical supplier name" },
+    invoiceNumber: { type: "string" },
+    invoiceDate: { type: "string", description: "YYYY-MM-DD" },
+    currency: { type: "string" },
+    totalAmount: { type: "number" },
+    category: {
+      type: "string",
+      enum: INVOICE_CATEGORIES as unknown as string[],
+    },
+    briefDescription: { type: "string", description: "Short summary (max 160 chars)" },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          productCode: { type: "string" },
+          productDescription: { type: "string" },
+          qty: { type: "number" },
+          unit: { type: "string" },
+          unitPrice: { type: "number" },
+          totalPrice: { type: "number" },
+        },
+        required: ["productCode", "productDescription", "qty", "unit", "unitPrice", "totalPrice"],
+      },
+    },
+  },
+} as const;
+
+export type CorrectionPatch = Partial<{
+  supplier: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  currency: string;
+  totalAmount: number;
+  category: InvoiceCategory;
+  briefDescription: string;
+  items: Array<{
+    productCode: string;
+    productDescription: string;
+    qty: number;
+    unit: string;
+    unitPrice: number;
+    totalPrice: number;
+  }>;
+}>;
+
+export async function correctInvoiceWithChat(opts: {
+  pdfBase64: string;
+  currentData: {
+    supplier: string | null;
+    invoiceNumber: string | null;
+    invoiceDate: string | null;
+    totalAmount: number | null;
+    currency: string | null;
+    category: string | null;
+    briefDescription: string | null;
+    extractedData: unknown;
+  };
+  chatHistory: ChatMessage[];
+  userMessage: string;
+}): Promise<{ assistantText: string; patch: CorrectionPatch | null }> {
+  const backend = getExtractorBackend();
+  if (backend !== "claude-sonnet") {
+    // The chat UX is Claude-only — GPT-4o's strict JSON mode doesn't do
+    // the "text answer + optional tool call" shape as cleanly.
+    throw new Error(
+      "La corrección por chat requiere ANTHROPIC_API_KEY. Configúrala en Railway.",
+    );
+  }
+
+  const anthropic = anthropicClient();
+  const systemPrompt = `You are a correction assistant for Casa Bruja's purchase invoice library. The operator noticed a mistake in the AI-extracted data for this invoice and is telling you what to fix.
+
+You will be given:
+1. The original PDF (re-read it fresh — don't trust what was extracted)
+2. The CURRENT extracted data (possibly wrong)
+3. Conversation history
+4. The operator's latest message
+
+Rules:
+- Re-read the PDF carefully. Never fabricate product codes, prices, or quantities. If a field isn't visible in the PDF, say so.
+- Reply conversationally in Spanish (the operator speaks Spanish, but product names stay in English if that's how they appear on the invoice).
+- If the operator asks for a fix, call the apply_corrections tool with ONLY the fields that change. Leave everything else out of the tool call.
+- If the operator just asks a clarifying question, reply with text only — don't call the tool.
+- After calling the tool, briefly describe in your text response what you changed and why.
+
+CURRENT EXTRACTED DATA (may be wrong):
+${JSON.stringify(
+  {
+    supplier: opts.currentData.supplier,
+    invoiceNumber: opts.currentData.invoiceNumber,
+    invoiceDate: opts.currentData.invoiceDate,
+    totalAmount: opts.currentData.totalAmount,
+    currency: opts.currentData.currency,
+    category: opts.currentData.category,
+    briefDescription: opts.currentData.briefDescription,
+    items: (opts.currentData.extractedData as any)?.items ?? [],
+  },
+  null,
+  2,
+)}`;
+
+  // Build messages: PDF on the first user turn, then alternate chat history,
+  // then the new user message.
+  const messages: Anthropic.MessageParam[] = [];
+
+  // First turn: PDF attachment + whatever the first user message was (or a
+  // seed if this is their very first message).
+  const firstHistoryUser = opts.chatHistory.find((m) => m.role === "user");
+  const pdfIntroText = firstHistoryUser
+    ? firstHistoryUser.text
+    : "Aquí está el PDF de la factura. Voy a indicarte correcciones.";
+
+  messages.push({
+    role: "user",
+    content: [
+      {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: cleanBase64(opts.pdfBase64),
+        },
+      },
+      { type: "text", text: pdfIntroText },
+    ],
+  });
+
+  // Replay the rest of the chat history (skip the first user message since
+  // we folded it into the PDF turn above).
+  let seenFirstUser = false;
+  for (const m of opts.chatHistory) {
+    if (m.role === "user" && !seenFirstUser) {
+      seenFirstUser = true;
+      continue;
+    }
+    messages.push({ role: m.role, content: m.text });
+  }
+
+  // Finally, the new user message.
+  messages.push({ role: "user", content: opts.userMessage });
+
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-5",
+    max_tokens: 4096,
+    system: systemPrompt,
+    tools: [
+      {
+        name: "apply_corrections",
+        description:
+          "Update specific fields on the invoice based on the operator's correction. Only include fields that should change.",
+        input_schema: toClaudeSchema(CORRECTION_PATCH_SCHEMA) as Anthropic.Tool.InputSchema,
+      },
+    ],
+    messages,
+  });
+
+  // Extract the text reply and (optionally) the tool-use patch.
+  let assistantText = "";
+  let patch: CorrectionPatch | null = null;
+  for (const block of response.content as any[]) {
+    if (block.type === "text") assistantText += block.text;
+    else if (block.type === "tool_use" && block.name === "apply_corrections") {
+      patch = block.input as CorrectionPatch;
+    }
+  }
+  if (!assistantText) {
+    assistantText = patch
+      ? "Listo — apliqué las correcciones."
+      : "(respuesta vacía)";
+  }
+  return { assistantText, patch };
+}
