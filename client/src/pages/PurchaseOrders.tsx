@@ -23,6 +23,7 @@ import {
   getPurchaseOrder,
   nextPoNumber,
   createPurchaseOrder,
+  updatePurchaseOrder,
   deletePurchaseOrder,
   setPurchaseOrderStatus,
   approvePurchaseOrder,
@@ -329,6 +330,13 @@ function PoDetailDrawer({
   onChanged: () => Promise<void>;
 }) {
   const [full, setFull] = useState<PurchaseOrderFull | null>(null);
+  // Edit state for the Costos extra section — user-authored extras only.
+  // Extras tied to a cost-invoice allocation (costInvoiceAllocationId set)
+  // are rendered read-only below the editor because they're managed from
+  // Fletes y Gastos, not here.
+  const [extrasEditing, setExtrasEditing] = useState(false);
+  const [extrasDraft, setExtrasDraft] = useState<DraftExtraCost[]>([]);
+  const [savingExtras, setSavingExtras] = useState(false);
   const [allocs, setAllocs] = useState<Awaited<ReturnType<typeof costInvoiceAllocationsForPo>>>([]);
   const [attachments, setAttachments] = useState<PoAttachment[]>([]);
   const [storageOk, setStorageOk] = useState<boolean | null>(null);
@@ -562,37 +570,55 @@ function PoDetailDrawer({
             )}
           </Section>
 
-          {/* Extra costs */}
-          <Section title={`Costos extra (${extras.length})`}>
-            {extras.length === 0 ? (
-              <Empty>Sin costos extra asignados.</Empty>
-            ) : (
-              <table style={miniTable}>
-                <thead>
-                  <tr>
-                    <Th>Tipo</Th>
-                    <Th>Descripción</Th>
-                    <Th>Método</Th>
-                    <Th style={{ textAlign: "right" }}>Monto</Th>
-                    <Th>Ref factura</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {extras.map((ec) => (
-                    <tr key={ec.id}>
-                      <Td>{ec.costType}</Td>
-                      <Td>{ec.description || "—"}</Td>
-                      <Td style={{ color: MUTED }}>{ec.allocationMethod}</Td>
-                      <Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {ec.amount.toFixed(2)}
-                      </Td>
-                      <Td>{ec.costInvoiceRef || "—"}</Td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </Section>
+          {/* Extra costs — editable (user-entered) + read-only (from Fletes y Gastos) */}
+          <ExtrasSection
+            extras={extras}
+            editing={extrasEditing}
+            draft={extrasDraft}
+            saving={savingExtras}
+            onStartEdit={() => {
+              // Seed the draft from the user-entered extras (skip cost-invoice-
+              // allocated rows — those are controlled by Fletes y Gastos).
+              setExtrasDraft(
+                extras
+                  .filter((e) => !e.costInvoiceAllocationId)
+                  .map((e) => ({
+                    costType: e.costType,
+                    description: e.description ?? "",
+                    amount: String(e.amount),
+                    allocationMethod: e.allocationMethod as AllocationMethod,
+                  })),
+              );
+              setExtrasEditing(true);
+            }}
+            onCancelEdit={() => setExtrasEditing(false)}
+            onUpdateDraft={setExtrasDraft}
+            onSaveExtras={async () => {
+              setSavingExtras(true);
+              try {
+                const cleanExtras = extrasDraft
+                  .filter((ec) => ec.costType.trim() && parseFloat(ec.amount || "0") > 0)
+                  .map((ec) => ({
+                    costType: ec.costType.trim(),
+                    description: ec.description.trim() || null,
+                    amount: parseFloat(ec.amount),
+                    allocationMethod: ec.allocationMethod,
+                  }));
+                await updatePurchaseOrder({
+                  id: poRow.id,
+                  extraCosts: cleanExtras,
+                });
+                toast.success("Costos extra actualizados — landed cost recalculado");
+                setExtrasEditing(false);
+                await load();
+                await onChanged();
+              } catch (e: any) {
+                toast.error(e?.message ?? "Error guardando costos");
+              } finally {
+                setSavingExtras(false);
+              }
+            }}
+          />
 
           {/* Attachments */}
           <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1465,6 +1491,229 @@ function NewPoDialog({
 // ───────────────────────────────────────────────────────────────────────────
 // Shared bits
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Costos extra section for the PO detail drawer. Shows user-entered
+ * extras with an "Editar" toggle (add/remove/update rows + save), and
+ * below them a separate read-only block for cost-invoice-allocated
+ * extras — those originate from Fletes y Gastos and can't be edited
+ * here, only via that page's deallocate flow.
+ */
+function ExtrasSection({
+  extras,
+  editing,
+  draft,
+  saving,
+  onStartEdit,
+  onCancelEdit,
+  onUpdateDraft,
+  onSaveExtras,
+}: {
+  extras: Array<{
+    id: number;
+    costType: string;
+    description: string | null;
+    amount: number;
+    allocationMethod: string;
+    costInvoiceAllocationId?: number | null;
+    costInvoiceRef?: string | null;
+  }>;
+  editing: boolean;
+  draft: DraftExtraCost[];
+  saving: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onUpdateDraft: (next: DraftExtraCost[]) => void;
+  onSaveExtras: () => Promise<void>;
+}) {
+  const manual = extras.filter((e) => !e.costInvoiceAllocationId);
+  const fromInvoices = extras.filter((e) => !!e.costInvoiceAllocationId);
+  const draftTotal = draft.reduce((s, ec) => s + (parseFloat(ec.amount) || 0), 0);
+
+  return (
+    <div style={{ marginTop: "1.25rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+        <h3 style={{ fontSize: "0.8125rem", fontWeight: 800, color: INK, margin: 0, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          Costos extra ({manual.length + fromInvoices.length})
+        </h3>
+        {!editing ? (
+          <button onClick={onStartEdit} style={btnSecondary} title="Agregar, editar o quitar costos extra manuales">
+            ✎ Editar costos
+          </button>
+        ) : (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={onCancelEdit} disabled={saving} style={btnSecondary}>
+              Cancelar
+            </button>
+            <button onClick={onSaveExtras} disabled={saving} style={btnPrimary}>
+              {saving ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : null}
+              Guardar y recalcular
+            </button>
+          </div>
+        )}
+      </div>
+
+      {!editing && manual.length === 0 && fromInvoices.length === 0 && (
+        <Empty>Sin costos extra. Click <strong>Editar costos</strong> para agregar flete, aduana, etc.</Empty>
+      )}
+
+      {editing && (
+        <>
+          {draft.length === 0 ? (
+            <div style={{ padding: "0.625rem", background: SOFT, borderRadius: 8, fontSize: "0.75rem", color: MUTED, textAlign: "center", marginBottom: 8 }}>
+              Sin costos. Agrega el primero con el botón de abajo.
+            </div>
+          ) : (
+            <table style={miniTable}>
+              <thead>
+                <tr>
+                  <Th style={{ width: 110 }}>Tipo</Th>
+                  <Th>Descripción</Th>
+                  <Th style={{ width: 110 }}>Monto</Th>
+                  <Th style={{ width: 160 }}>Asignación</Th>
+                  <Th style={{ width: 30 }}></Th>
+                </tr>
+              </thead>
+              <tbody>
+                {draft.map((ec, idx) => (
+                  <tr key={idx}>
+                    <Td style={{ padding: 4 }}>
+                      <select
+                        value={ec.costType}
+                        onChange={(e) => onUpdateDraft(draft.map((x, i) => (i === idx ? { ...x, costType: e.target.value } : x)))}
+                        style={inputStyle}
+                      >
+                        {EXTRA_COST_TYPES.map((t) => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </Td>
+                    <Td style={{ padding: 4 }}>
+                      <input
+                        value={ec.description}
+                        onChange={(e) => onUpdateDraft(draft.map((x, i) => (i === idx ? { ...x, description: e.target.value } : x)))}
+                        style={inputStyle}
+                        placeholder="ej. Flete YCH → Panama"
+                      />
+                    </Td>
+                    <Td style={{ padding: 4 }}>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={ec.amount}
+                        onChange={(e) => onUpdateDraft(draft.map((x, i) => (i === idx ? { ...x, amount: e.target.value } : x)))}
+                        style={{ ...inputStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+                        placeholder="0.00"
+                      />
+                    </Td>
+                    <Td style={{ padding: 4 }}>
+                      <select
+                        value={ec.allocationMethod}
+                        onChange={(e) => onUpdateDraft(draft.map((x, i) => (i === idx ? { ...x, allocationMethod: e.target.value as AllocationMethod } : x)))}
+                        style={inputStyle}
+                        title={ALLOCATION_LABELS[ec.allocationMethod].hint}
+                      >
+                        {(Object.keys(ALLOCATION_LABELS) as AllocationMethod[]).map((m) => (
+                          <option key={m} value={m}>{ALLOCATION_LABELS[m].es}</option>
+                        ))}
+                      </select>
+                    </Td>
+                    <Td style={{ padding: 4, textAlign: "center" }}>
+                      <button
+                        onClick={() => onUpdateDraft(draft.filter((_, i) => i !== idx))}
+                        style={iconBtnDanger}
+                        aria-label="Eliminar"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+            <button
+              onClick={() =>
+                onUpdateDraft([
+                  ...draft,
+                  { costType: "freight", description: "", amount: "", allocationMethod: "by_weight" },
+                ])
+              }
+              style={btnSecondary}
+            >
+              <Plus size={12} /> Agregar costo
+            </button>
+            <div style={{ fontSize: "0.8125rem", color: INK }}>
+              <span style={{ color: MUTED, marginRight: 6 }}>Total manual:</span>
+              <strong>{draftTotal.toFixed(2)}</strong>
+            </div>
+          </div>
+        </>
+      )}
+
+      {!editing && manual.length > 0 && (
+        <table style={miniTable}>
+          <thead>
+            <tr>
+              <Th>Tipo</Th>
+              <Th>Descripción</Th>
+              <Th>Método</Th>
+              <Th style={{ textAlign: "right" }}>Monto</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {manual.map((ec) => (
+              <tr key={ec.id}>
+                <Td>{ec.costType}</Td>
+                <Td>{ec.description || "—"}</Td>
+                <Td style={{ color: MUTED }}>
+                  {ALLOCATION_LABELS[ec.allocationMethod as AllocationMethod]?.es ?? ec.allocationMethod}
+                </Td>
+                <Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                  {ec.amount.toFixed(2)}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {fromInvoices.length > 0 && (
+        <div style={{ marginTop: manual.length > 0 ? "0.5rem" : 0 }}>
+          <div style={{ fontSize: "0.7rem", color: MUTED, marginBottom: 4 }}>
+            Asignados desde Fletes y Gastos (gestionados en esa página):
+          </div>
+          <table style={miniTable}>
+            <thead>
+              <tr>
+                <Th>Tipo</Th>
+                <Th>Ref factura</Th>
+                <Th>Método</Th>
+                <Th style={{ textAlign: "right" }}>Monto</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {fromInvoices.map((ec) => (
+                <tr key={ec.id} style={{ opacity: 0.85 }}>
+                  <Td>{ec.costType}</Td>
+                  <Td>{ec.costInvoiceRef || "—"}</Td>
+                  <Td style={{ color: MUTED }}>
+                    {ALLOCATION_LABELS[ec.allocationMethod as AllocationMethod]?.es ?? ec.allocationMethod}
+                  </Td>
+                  <Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {ec.amount.toFixed(2)}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function StatusPill({ status }: { status: PoStatus }) {
   const s = STATUS_STYLE[status];
