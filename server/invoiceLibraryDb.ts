@@ -72,6 +72,40 @@ export async function countByCategory(): Promise<Record<string, number>> {
   return counts;
 }
 
+/**
+ * Manual-override examples for the classifier's in-context learning.
+ * Returns up to `limit` invoices where the user corrected the AI's
+ * category (categoryWasManual=true). Used as few-shot hints in the
+ * next extract call so the model learns from past mistakes.
+ *
+ * We return the newest overrides first — newer corrections should outrank
+ * older ones if there's a conflict. Supplier+briefDescription is the
+ * minimal key the model needs to generalise.
+ */
+export async function getManualCategoryExamples(
+  limit = 30,
+): Promise<Array<{ supplier: string; briefDescription: string; category: string }>> {
+  const db = reqDb();
+  const rows = await db
+    .select({
+      supplier: supplierInvoices.supplier,
+      briefDescription: supplierInvoices.briefDescription,
+      category: supplierInvoices.category,
+    })
+    .from(supplierInvoices)
+    .where(eq(supplierInvoices.categoryWasManual, true))
+    .orderBy(desc(supplierInvoices.updatedAt))
+    .limit(limit);
+  // Drop rows with no discriminating text — they'd just be noise.
+  return rows
+    .filter((r) => (r.supplier || r.briefDescription || "").trim().length > 3)
+    .map((r) => ({
+      supplier: (r.supplier || "").trim(),
+      briefDescription: (r.briefDescription || "").trim(),
+      category: r.category,
+    }));
+}
+
 export async function getSupplierInvoice(id: number): Promise<SupplierInvoice | null> {
   const db = reqDb();
   const [row] = await db.select().from(supplierInvoices).where(eq(supplierInvoices.id, id));

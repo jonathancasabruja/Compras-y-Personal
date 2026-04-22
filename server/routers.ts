@@ -59,6 +59,7 @@ import {
   deleteSupplierInvoice,
   linkInvoiceToPo,
   linkInvoiceToCostInvoice,
+  getManualCategoryExamples,
 } from "./invoiceLibraryDb";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -643,9 +644,10 @@ const purchaseOrdersRouter = router({
       // Feed the extractor authoritative brewery data so it uses canonical
       // product codes instead of the supplier's random codes. Both queries
       // are cheap — catalog ~50 rows, supplier mappings ~25 rows.
-      const [catalog, supplierMappings] = await Promise.all([
+      const [catalog, supplierMappings, manualCategoryExamples] = await Promise.all([
         listCatalogForExtraction().catch(() => []),
         listSupplierMappingsForExtraction().catch(() => []),
+        getManualCategoryExamples(30).catch(() => []),
       ]);
       return extractPoFromPdf(input.dataBase64, {
         catalog: catalog.map((c) => ({
@@ -655,6 +657,7 @@ const purchaseOrdersRouter = router({
           unit: c.unit,
         })),
         supplierMappings,
+        manualCategoryExamples,
       });
     }),
   attachments: router({
@@ -858,8 +861,11 @@ const invoiceLibraryRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      // Extract first so we know supplier + date + category for the filename
-      const extracted = await extractPoFromPdf(input.dataBase64).catch((err) => {
+      // Extract first so we know supplier + date + category for the filename.
+      // Feed manual override history as few-shot examples so the model
+      // learns from past classification corrections.
+      const manualCategoryExamples = await getManualCategoryExamples(30).catch(() => []);
+      const extracted = await extractPoFromPdf(input.dataBase64, { manualCategoryExamples }).catch((err) => {
         console.warn("[invoiceLibrary] AI extraction failed, saving with placeholders", err);
         return null;
       });

@@ -214,6 +214,16 @@ export type PoExtractorContext = {
     internalProductCode: string;
     timesUsed: number;
   }>;
+  /**
+   * Past invoices where Jonathan overrode the AI's category. Fed back into
+   * the prompt as classification hints so the model learns from its
+   * mistakes. Pulled from supplier_invoices WHERE category_was_manual=true.
+   */
+  manualCategoryExamples?: Array<{
+    supplier: string;
+    briefDescription: string;
+    category: string;
+  }>;
 };
 
 function buildPoPrompt(ctx: PoExtractorContext): string {
@@ -249,6 +259,24 @@ function buildPoPrompt(ctx: PoExtractorContext): string {
     parts.push(
       "\n\nLEARNED SUPPLIER MAPPINGS — when a line on this invoice matches one of these supplier descriptions, use the mapped code directly:\n" +
         hints,
+    );
+  }
+
+  if (ctx.manualCategoryExamples && ctx.manualCategoryExamples.length > 0) {
+    // These are classifications the user corrected after the AI got them
+    // wrong. Treat them as authoritative — if the current invoice matches
+    // one of these supplier/description patterns, use the corrected
+    // category directly.
+    const examples = ctx.manualCategoryExamples
+      .slice(0, 30)
+      .map((ex) => {
+        const desc = ex.briefDescription ? ` / "${ex.briefDescription}"` : "";
+        return `  Supplier "${ex.supplier}"${desc} → ${ex.category}`;
+      })
+      .join("\n");
+    parts.push(
+      "\n\nLEARNED CLASSIFICATIONS — these are invoices Jonathan re-categorized after the AI got them wrong. When a new invoice matches (same supplier, similar description), use the same category:\n" +
+        examples,
     );
   }
 

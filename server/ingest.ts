@@ -54,7 +54,7 @@
 import type { Request, Response } from "express";
 import { storagePut, isStorageConfigured } from "./storage";
 import { extractPoFromPdf, type InvoiceCategory } from "./invoiceExtractor";
-import { createSupplierInvoice } from "./invoiceLibraryDb";
+import { createSupplierInvoice, getManualCategoryExamples } from "./invoiceLibraryDb";
 
 function checkSecret(req: Request): boolean {
   const expected = process.env.INGEST_SECRET;
@@ -81,7 +81,11 @@ async function ingestPdf(
   uploadedBy: string | null,
 ) {
   const base64 = buffer.toString("base64");
-  const extracted = await extractPoFromPdf(base64).catch((err) => {
+  // Pull past manual-override examples so the model learns from them. Cap
+  // at 30 so the prompt doesn't explode. On DB failure, just proceed
+  // without examples — we'd rather classify without hints than block.
+  const manualCategoryExamples = await getManualCategoryExamples(30).catch(() => []);
+  const extracted = await extractPoFromPdf(base64, { manualCategoryExamples }).catch((err) => {
     console.warn("[ingest] extraction failed, saving with placeholders", err);
     return null;
   });
