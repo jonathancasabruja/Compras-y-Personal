@@ -39,6 +39,7 @@ import {
   type CreatePoInput,
   type PoAttachment,
 } from "@/lib/supabase";
+import { compressPdfClientSide, formatBytes } from "@/lib/pdfCompress";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Órdenes de Compra — Phase 1d MVP.
@@ -354,22 +355,42 @@ function PoDetailDrawer({
   }, [poRow.id]);
 
   const onFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const picked = e.target.files?.[0];
+    if (!picked) return;
     // Reset so choosing the same file twice still triggers change
     e.target.value = "";
-    // 8 MB guardrail — server JSON limit is 10 MB, base64 adds ~33% overhead
-    if (file.size > 8 * 1024 * 1024) {
-      toast.error("Archivo muy grande (máx 8 MB)");
+    // 20 MB cap on raw input — compression will shrink it to fit the 8 MB
+    // post-upload budget. Anything bigger is probably a mistake.
+    if (picked.size > 20 * 1024 * 1024) {
+      toast.error("Archivo muy grande (máx 20 MB)");
       return;
     }
     setBusy("upload");
     try {
-      const { attachment, storageConfigured } = await uploadPoAttachment(poRow.id, file);
+      let fileToUpload = picked;
+      // Compress PDFs client-side to the lowest-resolution-that's-still-readable.
+      if (picked.type === "application/pdf" || picked.name.toLowerCase().endsWith(".pdf")) {
+        toast.loading("Comprimiendo PDF…", { id: "compress" });
+        const result = await compressPdfClientSide(picked);
+        toast.dismiss("compress");
+        if (result.compressed) {
+          toast.info(
+            `PDF comprimido: ${formatBytes(result.originalSize)} → ${formatBytes(result.compressedSize)}`,
+            { duration: 3500 },
+          );
+        }
+        fileToUpload = result.file;
+      }
+      // Final sanity cap — Express JSON limit is 10 MB and base64 adds ~33%
+      if (fileToUpload.size > 8 * 1024 * 1024) {
+        toast.error(`Archivo sigue muy grande después de comprimir (${formatBytes(fileToUpload.size)}). Máx 8 MB.`);
+        return;
+      }
+      const { attachment, storageConfigured } = await uploadPoAttachment(poRow.id, fileToUpload);
       if (!storageConfigured) {
         toast.warning("Almacenamiento no configurado — se guardó el registro pero no el archivo");
       } else {
-        toast.success(`Subido: ${file.name}`);
+        toast.success(`Subido: ${fileToUpload.name}`);
       }
       setStorageOk(storageConfigured);
       if (attachment) {

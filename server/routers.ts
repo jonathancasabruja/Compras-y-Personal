@@ -40,7 +40,7 @@ import {
   deallocateCostInvoice,
   getCostInvoiceAllocationsForPo,
 } from "./purchasingDb";
-import { storagePut, isStorageConfigured } from "./storage";
+import { storagePut, storageDelete, isStorageConfigured } from "./storage";
 import {
   extractPoFromPdf,
   extractCostInvoiceFromPdf,
@@ -679,6 +679,13 @@ const purchaseOrdersRouter = router({
     delete: publicProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
+        // Remove the cloud file first (best-effort) before dropping the row.
+        // If storage isn't configured or the object is already gone, we still
+        // want the DB row to go so the UI doesn't show a broken attachment.
+        const existing = await getPoAttachment(input.id);
+        if (existing?.fileKey) {
+          await storageDelete(existing.fileKey).catch(() => undefined);
+        }
         await deletePoAttachment(input.id);
         return { ok: true };
       }),
