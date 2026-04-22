@@ -110,6 +110,44 @@ async function ingestPdf(
   });
 }
 
+// ─── /ingest/folder — simple JSON API for the OneDrive watcher ─────────────
+// Accepts `{ filename, dataBase64, uploadedBy }` and runs the same
+// extract → rename → store → insert pipeline as the browser upload. Auth
+// is the shared INGEST_SECRET. Designed for Jonathan's folder-sync
+// watcher script (see invoice-watcher/ under Projecto Revisado).
+export async function handleFolderIngest(req: Request, res: Response) {
+  if (!checkSecret(req)) return res.status(401).json({ error: "unauthorized" });
+  if (!isStorageConfigured())
+    return res.status(503).json({ error: "storage not configured" });
+
+  const { filename, dataBase64, uploadedBy } = req.body ?? {};
+  if (typeof filename !== "string" || typeof dataBase64 !== "string") {
+    return res.status(400).json({ error: "filename + dataBase64 required" });
+  }
+  try {
+    const buf = Buffer.from(dataBase64, "base64");
+    const row = await ingestPdf(
+      buf,
+      filename,
+      typeof uploadedBy === "string" && uploadedBy ? uploadedBy : "onedrive-watcher",
+    );
+    if (!row) return res.status(500).json({ error: "insert failed" });
+    return res.json({
+      ok: true,
+      id: row.id,
+      storedFilename: row.storedFilename,
+      supplier: row.supplier,
+      category: row.category,
+      invoiceDate: row.invoiceDate,
+      totalAmount: row.totalAmount,
+      currency: row.currency,
+    });
+  } catch (err: any) {
+    console.error("[ingest/folder] error", err);
+    return res.status(500).json({ error: err?.message ?? "ingest error" });
+  }
+}
+
 // ─── /ingest/email ──────────────────────────────────────────────────────────
 // Accepts the normalized multipart/form-data that Postmark Inbound and
 // SendGrid Inbound Parse both send. Field names differ slightly; we try

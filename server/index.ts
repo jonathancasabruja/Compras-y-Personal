@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./routers";
 import { createContext } from "./trpc";
-import { handleEmailIngest, handleWhatsappIngest } from "./ingest";
+import { handleEmailIngest, handleWhatsappIngest, handleFolderIngest } from "./ingest";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +52,7 @@ async function startServer() {
   // query/header and fails closed when the secret isn't configured.
   app.post("/ingest/email", handleEmailIngest);
   app.post("/ingest/whatsapp", handleWhatsappIngest);
+  app.post("/ingest/folder", handleFolderIngest);
 
   const password = process.env.APP_PASSWORD;
   if (password) {
