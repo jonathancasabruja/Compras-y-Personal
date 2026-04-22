@@ -47,7 +47,19 @@ import {
   extractPoFromPdf,
   extractCostInvoiceFromPdf,
   isExtractorConfigured,
+  INVOICE_CATEGORIES,
+  type InvoiceCategory,
 } from "./invoiceExtractor";
+import {
+  listSupplierInvoices,
+  countByCategory,
+  getSupplierInvoice,
+  createSupplierInvoice,
+  updateSupplierInvoice,
+  deleteSupplierInvoice,
+  linkInvoiceToPo,
+  linkInvoiceToCostInvoice,
+} from "./invoiceLibraryDb";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -790,6 +802,156 @@ const costInvoicesRouter = router({
     .mutation(({ input }) => extractCostInvoiceFromPdf(input.dataBase64)),
 });
 
+// ─── Supplier Invoice Library ─────────────────────────────────────────────
+
+const invoiceCategoryEnum = z.enum(INVOICE_CATEGORIES);
+
+function sanitizeForFilename(v: string): string {
+  return v
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "invoice";
+}
+
+const invoiceLibraryRouter = router({
+  extractorConfigured: publicProcedure.query(() => ({
+    configured: isExtractorConfigured(),
+    storage: isStorageConfigured(),
+  })),
+
+  list: publicProcedure
+    .input(
+      z
+        .object({
+          category: invoiceCategoryEnum.optional(),
+          search: z.string().optional(),
+          unlinkedOnly: z.boolean().optional(),
+          limit: z.number().min(1).max(500).optional(),
+        })
+        .optional(),
+    )
+    .query(({ input }) => listSupplierInvoices(input ?? {})),
+
+  counts: publicProcedure.query(() => countByCategory()),
+
+  get: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .query(({ input }) => getSupplierInvoice(input.id)),
+
+  /**
+   * Upload a PDF (base64) to the library. Runs AI extraction, then stores
+   * the PDF in Supabase Storage as `invoices/<category>/<supplier>-<date>.pdf`
+   * and inserts the row with the full extracted payload. UX: the client
+   * already compresses before sending, so `dataBase64` is the post-compress
+   * blob (typically 200-800 KB).
+   */
+  upload: publicProcedure
+    .input(
+      z.object({
+        originalFilename: z.string().min(1),
+        contentType: z.string().default("application/pdf"),
+        dataBase64: z.string().min(1),
+        uploadedBy: z.string().nullable().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      // Extract first so we know supplier + date + category for the filename
+      const extracted = await extractPoFromPdf(input.dataBase64).catch((err) => {
+        console.warn("[invoiceLibrary] AI extraction failed, saving with placeholders", err);
+        return null;
+      });
+
+      const category: InvoiceCategory = (extracted?.category ?? "other") as InvoiceCategory;
+      const supplier = extracted?.supplier?.trim() || "unknown-supplier";
+      const date = extracted?.date || new Date().toISOString().split("T")[0];
+      const storedFilename = `${sanitizeForFilename(supplier)}-${sanitizeForFilename(date)}.pdf`;
+      const key = `invoices/${category}/${Date.now()}-${storedFilename}`;
+
+      const bytes = Buffer.from(input.dataBase64, "base64");
+      const uploaded = await storagePut(key, new Uint8Array(bytes), input.contentType);
+
+      const row = await createSupplierInvoice({
+        fileUrl: uploaded.url,
+        fileKey: uploaded.key,
+        originalFilename: input.originalFilename,
+        storedFilename,
+        supplier,
+        invoiceNumber: extracted?.invoiceNumber ?? null,
+        invoiceDate: date,
+        currency: extracted?.currency ?? "USD",
+        totalAmount: extracted?.totalAmount ?? 0,
+        category,
+        categoryWasManual: false,
+        briefDescription: extracted?.briefDescription ?? null,
+        extractedData: extracted as any,
+        uploadedBy: input.uploadedBy ?? null,
+      });
+
+      return {
+        invoice: row,
+        storageConfigured: isStorageConfigured(),
+        extractorRan: !!extracted,
+      };
+    }),
+
+  /**
+   * User edits: supplier, date, category, description, notes, etc. When
+   * category changes, we mark categoryWasManual so a future re-extract
+   * doesn't silently clobber the user's choice.
+   */
+  update: publicProcedure
+    .input(
+      z.object({
+        id: z.number(),
+        supplier: z.string().nullable().optional(),
+        invoiceNumber: z.string().nullable().optional(),
+        invoiceDate: z.string().nullable().optional(),
+        currency: z.string().optional(),
+        totalAmount: z.number().optional(),
+        category: invoiceCategoryEnum.optional(),
+        briefDescription: z.string().nullable().optional(),
+        notes: z.string().nullable().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { id, category, ...rest } = input;
+      const patch: Record<string, unknown> = { ...rest };
+      if (category !== undefined) {
+        patch.category = category;
+        patch.categoryWasManual = true;
+      }
+      return updateSupplierInvoice(id, patch as any);
+    }),
+
+  delete: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input }) => {
+      const existing = await getSupplierInvoice(input.id);
+      if (existing?.fileKey) {
+        await storageDelete(existing.fileKey).catch(() => undefined);
+      }
+      await deleteSupplierInvoice(input.id);
+      return { ok: true };
+    }),
+
+  linkToPo: publicProcedure
+    .input(z.object({ invoiceId: z.number(), poId: z.number().nullable() }))
+    .mutation(async ({ input }) => {
+      await linkInvoiceToPo(input.invoiceId, input.poId);
+      return { ok: true };
+    }),
+
+  linkToCostInvoice: publicProcedure
+    .input(z.object({ invoiceId: z.number(), costInvoiceId: z.number().nullable() }))
+    .mutation(async ({ input }) => {
+      await linkInvoiceToCostInvoice(input.invoiceId, input.costInvoiceId);
+      return { ok: true };
+    }),
+});
+
 export const appRouter = router({
   personas: personasRouter,
   tarifas: tarifasRouter,
@@ -797,6 +959,7 @@ export const appRouter = router({
   lotes: lotesRouter,
   purchaseOrders: purchaseOrdersRouter,
   costInvoices: costInvoicesRouter,
+  invoiceLibrary: invoiceLibraryRouter,
 });
 
 export type AppRouter = typeof appRouter;

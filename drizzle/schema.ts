@@ -234,3 +234,48 @@ export const supplierProductMappings = pgTable("supplier_product_mappings", {
 
 export type SupplierProductMapping = typeof supplierProductMappings.$inferSelect;
 export type InsertSupplierProductMapping = typeof supplierProductMappings.$inferInsert;
+
+// ─── Supplier Invoice Library ─────────────────────────────────────────────
+// Master repository of every supplier PDF. AI-classified at upload time,
+// user-overridable. OCs and Fletes y Gastos pick invoices from here rather
+// than uploading directly.
+
+export const invoiceCategoryEnum = pgEnum("invoice_category", [
+  "brewing_raw_materials",
+  "brewing_packaging",
+  "brewing_equipment",
+  "logistics",
+  "taproom_food",
+  "taproom_beverages",
+  "taproom_supplies",
+  "utilities",
+  "services",
+  "rent_facility",
+  "other",
+]);
+
+export const supplierInvoices = pgTable("supplier_invoices", {
+  id: serial("id").primaryKey(),
+  fileUrl: varchar("file_url", { length: 500 }).notNull(),
+  fileKey: varchar("file_key", { length: 500 }).notNull(),
+  originalFilename: varchar("original_filename", { length: 255 }),
+  storedFilename: varchar("stored_filename", { length: 255 }),
+  supplier: varchar("supplier", { length: 255 }),
+  invoiceNumber: varchar("invoice_number", { length: 100 }),
+  invoiceDate: varchar("invoice_date", { length: 20 }),
+  currency: varchar("currency", { length: 10 }).default("USD"),
+  totalAmount: real("total_amount").default(0),
+  category: invoiceCategoryEnum("category").default("other").notNull(),
+  categoryWasManual: boolean("category_was_manual").default(false).notNull(),
+  briefDescription: text("brief_description"),
+  extractedData: jsonb("extracted_data"),
+  usedInPoId: integer("used_in_po_id"),
+  usedInCostInvoiceId: integer("used_in_cost_invoice_id"),
+  notes: text("notes"),
+  uploadedBy: varchar("uploaded_by", { length: 100 }),
+  uploadedAt: timestamp("uploaded_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type SupplierInvoice = typeof supplierInvoices.$inferSelect;
+export type InsertSupplierInvoice = typeof supplierInvoices.$inferInsert;

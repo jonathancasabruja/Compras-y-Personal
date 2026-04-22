@@ -879,6 +879,114 @@ export async function extractCostInvoiceFromPdf(file: File): Promise<ExtractedCo
   return trpcMutate<ExtractedCostInvoice>("costInvoices.extractInvoice", { dataBase64 });
 }
 
+// ─── Supplier Invoice Library ─────────────────────────────────────────────
+
+export const INVOICE_CATEGORIES = [
+  "brewing_raw_materials",
+  "brewing_packaging",
+  "brewing_equipment",
+  "logistics",
+  "taproom_food",
+  "taproom_beverages",
+  "taproom_supplies",
+  "utilities",
+  "services",
+  "rent_facility",
+  "other",
+] as const;
+export type InvoiceCategory = (typeof INVOICE_CATEGORIES)[number];
+
+export const CATEGORY_LABELS: Record<InvoiceCategory, { es: string; group: "brewing" | "taproom" | "overhead" | "logistics" | "other" }> = {
+  brewing_raw_materials: { es: "Materias primas",    group: "brewing" },
+  brewing_packaging:     { es: "Empaque",             group: "brewing" },
+  brewing_equipment:     { es: "Equipo / Mantenimiento", group: "brewing" },
+  logistics:             { es: "Fletes y Aduanas",    group: "logistics" },
+  taproom_food:          { es: "Taproom · Comida",    group: "taproom" },
+  taproom_beverages:     { es: "Taproom · Bebidas",   group: "taproom" },
+  taproom_supplies:      { es: "Taproom · Suministros", group: "taproom" },
+  utilities:             { es: "Servicios públicos",  group: "overhead" },
+  services:              { es: "Servicios profesionales", group: "overhead" },
+  rent_facility:         { es: "Alquiler / Instalaciones", group: "overhead" },
+  other:                 { es: "Otro",                group: "other" },
+};
+
+export interface SupplierInvoice {
+  id: number;
+  fileUrl: string;
+  fileKey: string;
+  originalFilename: string | null;
+  storedFilename: string | null;
+  supplier: string | null;
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+  currency: string | null;
+  totalAmount: number | null;
+  category: InvoiceCategory;
+  categoryWasManual: boolean;
+  briefDescription: string | null;
+  extractedData: ExtractedPo | null;
+  usedInPoId: number | null;
+  usedInCostInvoiceId: number | null;
+  notes: string | null;
+  uploadedBy: string | null;
+  uploadedAt: string;
+  updatedAt: string;
+}
+
+export async function isInvoiceLibraryReady(): Promise<{ configured: boolean; storage: boolean }> {
+  const r = await trpcQuery<{ configured: boolean; storage: boolean }>(
+    "invoiceLibrary.extractorConfigured",
+  );
+  return r ?? { configured: false, storage: false };
+}
+
+export async function listInvoiceLibrary(opts: {
+  category?: InvoiceCategory;
+  search?: string;
+  unlinkedOnly?: boolean;
+} = {}): Promise<SupplierInvoice[]> {
+  return trpcQuery<SupplierInvoice[]>("invoiceLibrary.list", opts);
+}
+
+export async function invoiceLibraryCounts(): Promise<Record<string, number>> {
+  return trpcQuery<Record<string, number>>("invoiceLibrary.counts");
+}
+
+export async function getInvoiceFromLibrary(id: number): Promise<SupplierInvoice | null> {
+  return trpcQuery<SupplierInvoice | null>("invoiceLibrary.get", { id });
+}
+
+export async function uploadToInvoiceLibrary(
+  file: File,
+): Promise<{ invoice: SupplierInvoice | null; storageConfigured: boolean; extractorRan: boolean }> {
+  const dataBase64 = await fileToBase64(file);
+  return trpcMutate("invoiceLibrary.upload", {
+    originalFilename: file.name,
+    contentType: file.type || "application/pdf",
+    dataBase64,
+  });
+}
+
+export async function updateInvoiceInLibrary(
+  id: number,
+  patch: Partial<{
+    supplier: string | null;
+    invoiceNumber: string | null;
+    invoiceDate: string | null;
+    currency: string;
+    totalAmount: number;
+    category: InvoiceCategory;
+    briefDescription: string | null;
+    notes: string | null;
+  }>,
+): Promise<SupplierInvoice | null> {
+  return trpcMutate<SupplierInvoice | null>("invoiceLibrary.update", { id, ...patch });
+}
+
+export async function deleteInvoiceFromLibrary(id: number): Promise<void> {
+  await trpcMutate<{ ok: true }>("invoiceLibrary.delete", { id });
+}
+
 /**
  * Read a File/Blob as base64 (no `data:...;base64,` prefix) in the browser
  * and push it through the tRPC upload procedure. Returns the newly

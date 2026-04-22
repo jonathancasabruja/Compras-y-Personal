@@ -9,6 +9,7 @@ import Landing from "./pages/Landing";
 import Home from "./pages/Home";
 import PurchaseOrders from "./pages/PurchaseOrders";
 import CostInvoices from "./pages/CostInvoices";
+import InvoiceLibrary from "./pages/InvoiceLibrary";
 
 /**
  * Compras y Personal routes.
@@ -27,6 +28,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Landing} />
+      <Route path="/repositorio-facturas" component={InvoiceLibrary} />
       <Route path="/purchase-orders" component={PurchaseOrders} />
       <Route path="/cost-invoices" component={CostInvoices} />
       <Route path="/servicios-profesionales" component={Home} />

@@ -35,6 +35,22 @@ function toDataUrl(b64: string): string {
 
 // ─── Purchase Order extractor ───────────────────────────────────────────────
 
+export const INVOICE_CATEGORIES = [
+  "brewing_raw_materials",
+  "brewing_packaging",
+  "brewing_equipment",
+  "logistics",
+  "taproom_food",
+  "taproom_beverages",
+  "taproom_supplies",
+  "utilities",
+  "services",
+  "rent_facility",
+  "other",
+] as const;
+
+export type InvoiceCategory = (typeof INVOICE_CATEGORIES)[number];
+
 export type ExtractedPo = {
   supplier: string;
   invoiceNumber: string;
@@ -42,6 +58,8 @@ export type ExtractedPo = {
   currency: string;
   paymentTerms: string | null;
   totalAmount: number;
+  category: InvoiceCategory;
+  briefDescription: string;
   items: Array<{
     productCode: string;
     productDescription: string;
@@ -68,6 +86,26 @@ const PO_SCHEMA = {
     currency: { type: "string" },
     paymentTerms: { type: ["string", "null"] },
     totalAmount: { type: "number" },
+    category: {
+      type: "string",
+      enum: [
+        "brewing_raw_materials",
+        "brewing_packaging",
+        "brewing_equipment",
+        "logistics",
+        "taproom_food",
+        "taproom_beverages",
+        "taproom_supplies",
+        "utilities",
+        "services",
+        "rent_facility",
+        "other",
+      ],
+    },
+    briefDescription: {
+      type: "string",
+      description: "Short human-readable summary (max 120 chars)",
+    },
     items: {
       type: "array",
       items: {
@@ -114,26 +152,44 @@ const PO_SCHEMA = {
     "currency",
     "paymentTerms",
     "totalAmount",
+    "category",
+    "briefDescription",
     "items",
     "extraCosts",
   ],
 } as const;
 
-const PO_PROMPT_BASE = `Extract data from this supplier invoice / purchase order PDF for a BREWERY in Panama (Casa Bruja).
+const PO_PROMPT_BASE = `You are processing a business invoice for Casa Bruja, a craft brewery + taproom in Panama. The same library holds supplier purchase invoices (hops, malt, packaging), logistics (freight/customs), taproom operations (food, beverages, cleaning supplies), and overhead (electricity, internet, rent, legal). Your first job is to CLASSIFY the invoice; your second job is to extract its details.
 
-CRITICAL RULES:
-1. QUANTITY is WEIGHT in LBS or KG for raw materials (hops, malt, yeast). Look for columns like "Stock Qty", "Net Weight", or values ending in "LBS"/"KG" (e.g. "44.0LBS", "22.0 LBS").
+CLASSIFICATION — pick exactly one category:
+- brewing_raw_materials — anything that becomes part of beer (hops, malt, yeast, adjuncts, chemicals added during brewing)
+- brewing_packaging — cans, bottles, labels, caps, kegs, shrink sleeves, 6-pack trays
+- brewing_equipment — brewhouse equipment, pumps, valves, replacement parts, CIP/sanitation chemicals
+- logistics — freight, shipping, customs brokerage, cargo insurance, import handling fees
+- taproom_food — food ingredients for the taproom kitchen (meat, vegetables, bread, condiments)
+- taproom_beverages — drinks NOT made by Casa Bruja (wine, spirits, sodas, juices for cocktails)
+- taproom_supplies — napkins, cleaning chemicals, disposables, uniforms, glassware
+- utilities — electricity, water, gas, internet, phone, cable
+- services — legal, accounting, marketing, software subscriptions, consulting, web hosting
+- rent_facility — rent, security services, pest control, janitorial
+- other — anything that doesn't clearly fit the above
+
+Also produce a briefDescription (max 120 chars) like "Pellet hops shipment from BSG (Citra, Mosaic)" or "CFE electricity bill Mar 2026" or "IC Pan - pest control monthly".
+
+FIELD EXTRACTION RULES (applies to all categories; blank out fields that don't apply):
+1. QUANTITY is WEIGHT in LBS or KG for brewing_raw_materials (hops, malt, yeast). Look for "Stock Qty", "Net Weight", or values ending in "LBS"/"KG" (e.g. "44.0LBS").
    - NEVER use pack/carton counts ("1.0 CAR", "2 packs") as quantity for raw materials.
    - Common hop weights: 44 LBS, 22 LBS, 11 LBS, 55 LBS.
-   - For packaging materials (bottles, cans, labels) qty is unit count — that's fine.
-2. UNIT must ALWAYS be "LBS" when the weight is in pounds. If you see "44.0LBS" → unit = "LBS".
-3. UNIT PRICE: derive from line total ÷ weight qty when needed. Example: $605.05 total for 44 LBS → unitPrice = 13.7511.
-4. EXTRA COSTS: freight, shipping, insurance, customs, handling, surcharges — usually at the bottom of the invoice. Labels include "Freight", "Shipping", "USA Freight", "Flete", "Handling", "Aduana", "Comision".
-5. LOT NUMBERS: Values like P91-JUCIT9059, P92-JUMOS9116, 25-0058 are LOT NUMBERS (do NOT confuse with invoice numbers).
-6. PRODUCT CODES — this is the most important rule:
+   - For packaging, taproom, utilities, services: qty is unit count or just 1. Line items are optional — utility bills typically have none.
+2. UNIT must be "LBS" when the weight is in pounds.
+3. UNIT PRICE: for raw materials, derive from line total ÷ weight qty. Example: $605.05 total for 44 LBS → unitPrice = 13.7511.
+4. EXTRA COSTS: freight, shipping, insurance, customs, handling at the bottom of the invoice. Labels include "Freight", "Shipping", "USA Freight", "Flete", "Handling", "Aduana", "Comision". Most non-brewing invoices have no extras.
+5. LOT NUMBERS: Values like P91-JUCIT9059 are LOT NUMBERS (do NOT confuse with invoice numbers).
+6. PRODUCT CODES — this is the most important rule for brewing_raw_materials:
    - You will be given a CATALOG below of Casa Bruja's canonical product codes. ALWAYS match the invoice line to one of those codes when any reasonable match exists. Prefer fuzzy matching on the product name.
-   - You will also be given a list of LEARNED MAPPINGS from past invoices ("supplier X calls their product 'Foo Bar 2025' — that's always productCode YYY"). Use these as authoritative hints.
+   - You will also be given a list of LEARNED MAPPINGS from past invoices. Use these as authoritative hints.
    - Only fall back to the supplier's raw code when nothing in the catalog matches at all.
+   - For non-brewing invoices, leave productCode empty or use a human-readable label.
 
 If a field is not present, return an empty string for strings and 0 for numbers. Return date in YYYY-MM-DD. For fields required to be string-or-null, use null explicitly when unknown.`;
 

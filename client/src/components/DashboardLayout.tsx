@@ -4,6 +4,7 @@ import {
   Home as HomeIcon,
   Briefcase,
   ClipboardList,
+  FolderOpen,
   Receipt,
   Users,
   PanelLeft,
@@ -39,6 +40,11 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "COMPRAS",
     items: [
+      {
+        icon: FolderOpen,
+        label: "Repositorio de Facturas",
+        path: "/repositorio-facturas",
+      },
       {
         icon: ClipboardList,
         label: "Órdenes de Compra",
