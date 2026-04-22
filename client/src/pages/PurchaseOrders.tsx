@@ -37,6 +37,7 @@ import {
   isPoExtractorConfigured,
   linkInvoiceToPo,
   purchaseOrderCorrectionChat,
+  purchaseOrderDraftCorrectionChat,
   type PurchaseOrder,
   type PurchaseOrderFull,
   type PoStatus,
@@ -1086,6 +1087,23 @@ function NewPoDialog({
   const [extractorOk, setExtractorOk] = useState<boolean | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
+  // AI draft-chat state. We hold onto the PDF bytes from the last upload
+  // so Claude can re-read it when fixing lines. Chat history is purely
+  // local — it's only persisted if the user completes the Save (piggy-
+  // backs onto createPurchaseOrder's correction_chat column).
+  const [draftPdfBase64, setDraftPdfBase64] = useState<string | null>(null);
+  const [draftChat, setDraftChat] = useState<CorrectionChatMessage[]>([]);
+  const [draftChatDraft, setDraftChatDraft] = useState("");
+  const [sendingDraftChat, setSendingDraftChat] = useState(false);
+  const draftChatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    draftChatScrollRef.current?.scrollTo({
+      top: draftChatScrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [draftChat.length]);
+
   useEffect(() => {
     nextPoNumber()
       .then((n) => {
@@ -1155,6 +1173,17 @@ function NewPoDialog({
     }
     setExtracting(true);
     try {
+      // Stash the PDF bytes so the AI chat below can re-read it.
+      const reader = new FileReader();
+      const b64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const s = String(reader.result ?? "");
+          resolve(s.replace(/^data:application\/pdf;base64,/, ""));
+        };
+        reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+        reader.readAsDataURL(file);
+      });
+      setDraftPdfBase64(b64);
       const extracted = await extractPoFromPdf(file);
       // Pre-fill form fields (keep existing values the user may have typed)
       if (!supplier.trim()) setSupplier(extracted.supplier || "");
@@ -1237,6 +1266,139 @@ function NewPoDialog({
 
   const removeExtra = (idx: number) => setExtras((prev) => prev.filter((_, i) => i !== idx));
 
+  /**
+   * Apply an AI-returned patch to the form state. Only fields present in
+   * the patch are touched — leaves the user's typing alone otherwise.
+   * items/extraCosts are FULL replacement when provided (same contract as
+   * the server-side tool).
+   */
+  const applyAiPatch = (patch: {
+    supplier?: string;
+    supplierInvoiceNumber?: string;
+    date?: string;
+    expectedDate?: string;
+    currency?: string;
+    notes?: string;
+    items?: Array<{
+      productCode: string;
+      productDescription: string;
+      qty: number;
+      unit: string;
+      unitPrice: number;
+      totalPrice: number;
+      supplierLotNumber: string | null;
+    }>;
+    extraCosts?: Array<{
+      costType: string;
+      description: string;
+      amount: number;
+      allocationMethod: string;
+    }>;
+  }) => {
+    if (patch.supplier !== undefined) setSupplier(patch.supplier);
+    if (patch.supplierInvoiceNumber !== undefined) setSupplierInvoiceNumber(patch.supplierInvoiceNumber);
+    if (patch.date !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(patch.date)) setDate(patch.date);
+    if (patch.currency !== undefined) setCurrency(patch.currency);
+    if (patch.notes !== undefined) setNotes(patch.notes);
+    if (patch.items !== undefined) {
+      setItems(
+        patch.items.map((it) => ({
+          productCode: it.productCode || "",
+          productDescription: it.productDescription || "",
+          qty: String(it.qty ?? ""),
+          unit: it.unit || "kg",
+          baseCostPerUnit: String(it.unitPrice ?? ""),
+          weightKg: /^(lbs?|kg)$/i.test((it.unit || "").trim()) ? String(it.qty ?? "") : "",
+          volumeL: "",
+        })),
+      );
+    }
+    if (patch.extraCosts !== undefined) {
+      // Server sends allocation as string enum that may not match our
+      // client-side AllocationMethod labels exactly — coerce with guess.
+      const coerced: DraftExtraCost[] = patch.extraCosts.map((ec) => {
+        const mappedAllocation: AllocationMethod = (() => {
+          switch (ec.allocationMethod) {
+            case "by_qty":
+            case "by_weight":
+            case "by_volume":
+            case "by_value":
+            case "fixed_manual":
+              return ec.allocationMethod;
+            default:
+              return defaultAllocationFor(guessCostType(ec.costType));
+          }
+        })();
+        return {
+          costType: guessCostType(ec.costType),
+          description: ec.description || "",
+          amount: String(ec.amount ?? ""),
+          allocationMethod: mappedAllocation,
+        };
+      });
+      setExtras(coerced);
+    }
+  };
+
+  const sendDraftChat = async () => {
+    const text = draftChatDraft.trim();
+    if (!text || sendingDraftChat) return;
+    setSendingDraftChat(true);
+    const now = new Date().toISOString();
+    // Optimistic user-message append; rollback on error.
+    setDraftChat((c) => [...c, { role: "user", text, at: now }]);
+    setDraftChatDraft("");
+    try {
+      // Snapshot the current draft — numbers parsed from strings so the
+      // AI sees the same values the user sees in the form.
+      const draft = {
+        supplier: supplier || null,
+        supplierInvoiceNumber: supplierInvoiceNumber || null,
+        date,
+        currency,
+        notes: notes || null,
+        items: items
+          .filter((i) => i.productCode.trim() || i.productDescription.trim())
+          .map((i) => ({
+            productCode: i.productCode,
+            productDescription: i.productDescription || null,
+            qty: parseFloat(i.qty || "0"),
+            unit: i.unit || null,
+            unitPrice: parseFloat(i.baseCostPerUnit || "0"),
+            totalPrice:
+              (parseFloat(i.qty || "0") || 0) *
+              (parseFloat(i.baseCostPerUnit || "0") || 0),
+            supplierLotNumber: null,
+          })),
+        extraCosts: extras
+          .filter((ec) => ec.description.trim() || ec.amount.trim())
+          .map((ec) => ({
+            costType: ec.costType,
+            description: ec.description,
+            amount: parseFloat(ec.amount || "0"),
+            allocationMethod: ec.allocationMethod,
+          })),
+      };
+      const res = await purchaseOrderDraftCorrectionChat({
+        pdfBase64: draftPdfBase64 || undefined,
+        draft,
+        chatHistory: draftChat,
+        message: text,
+      });
+      setDraftChat(res.chatHistory);
+      if (res.patch) {
+        applyAiPatch(res.patch);
+        toast.success("La IA aplicó correcciones al borrador");
+      }
+    } catch (err: any) {
+      toast.error(err?.message ?? "Error con la IA");
+      setDraftChat((c) => c.slice(0, -1));
+      setDraftChatDraft(text);
+    } finally {
+      setSendingDraftChat(false);
+    }
+  };
+
   const submit = async () => {
     if (!poNumber.trim()) return toast.error("Número de OC requerido");
     if (!supplier.trim()) return toast.error("Proveedor requerido");
@@ -1274,6 +1436,9 @@ function NewPoDialog({
         notes: notes.trim() || null,
         items: cleanItems,
         extraCosts: cleanExtras.length > 0 ? cleanExtras : undefined,
+        // Persist the pre-save AI conversation onto the new PO so when
+        // someone re-opens it later the chat history is there.
+        correctionChat: draftChat.length > 0 ? draftChat : undefined,
       };
       const po = await createPurchaseOrder(input);
       if (po) {
@@ -1644,6 +1809,145 @@ function NewPoDialog({
           <p style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: MUTED }}>
             Al guardar, el servidor recalcula automáticamente el <em>landed cost per unit</em> de cada línea usando el método de asignación elegido. Puedes ver el desglose en el detalle de la OC.
           </p>
+
+          {/* AI draft chat — pre-save. Operator tells Claude what's wrong;
+              Claude (with the PDF + catalog) returns a patch we apply to
+              the form state right here. The conversation is saved on the
+              PO when the user clicks 'Crear OC'. */}
+          <div
+            style={{
+              marginTop: "1.25rem",
+              border: `1px solid ${BORDER}`,
+              borderRadius: 8,
+              background: "oklch(0.99 0 0)",
+            }}
+          >
+            <div
+              style={{
+                padding: "0.625rem 0.875rem",
+                borderBottom: `1px solid ${BORDER}`,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "oklch(0.97 0.02 260)",
+              }}
+            >
+              <Sparkles size={14} style={{ color: "oklch(0.55 0.18 260)" }} />
+              <div>
+                <div style={{ fontSize: "0.75rem", fontWeight: 700, color: INK }}>
+                  Corrección con IA (antes de guardar)
+                </div>
+                <div style={{ fontSize: "0.65rem", color: MUTED }}>
+                  Dile qué está mal. La IA relee el PDF {draftPdfBase64 ? "" : "(subes uno arriba)"} y
+                  ajusta los campos del borrador. Sugiere códigos internos del catálogo.
+                </div>
+              </div>
+            </div>
+
+            {draftChat.length > 0 && (
+              <div
+                ref={draftChatScrollRef}
+                style={{
+                  maxHeight: 260,
+                  overflowY: "auto",
+                  padding: "0.625rem 0.875rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                }}
+              >
+                {draftChat.map((m, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                      maxWidth: "85%",
+                      background:
+                        m.role === "user" ? "oklch(0.93 0.07 260)" : "oklch(0.96 0 0)",
+                      color: INK,
+                      border: `1px solid ${m.role === "user" ? "oklch(0.85 0.1 260)" : BORDER}`,
+                      borderRadius: 10,
+                      padding: "0.5rem 0.625rem",
+                      fontSize: "0.8125rem",
+                      lineHeight: 1.5,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "0.6rem",
+                        color: MUTED,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.04em",
+                        fontWeight: 700,
+                        marginBottom: 3,
+                      }}
+                    >
+                      {m.role === "user" ? "Tú" : "IA (Sonnet)"}
+                    </div>
+                    {m.text}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div
+              style={{
+                padding: "0.625rem 0.875rem",
+                borderTop: draftChat.length > 0 ? `1px solid ${BORDER}` : "none",
+                display: "flex",
+                gap: 6,
+              }}
+            >
+              <textarea
+                value={draftChatDraft}
+                onChange={(e) => setDraftChatDraft(e.target.value)}
+                placeholder={
+                  draftChat.length === 0
+                    ? 'ej: "La línea 2 es Mosaic pellets, 44 lbs a $13.75. Usa el código interno RHO-MOSA-PE."'
+                    : "Escribe otra corrección…"
+                }
+                rows={2}
+                disabled={sendingDraftChat}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    sendDraftChat();
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  padding: "0.4375rem 0.625rem",
+                  border: `1px solid ${BORDER}`,
+                  borderRadius: 6,
+                  fontSize: "0.8125rem",
+                  fontFamily: "inherit",
+                  resize: "vertical",
+                  background: sendingDraftChat ? "oklch(0.95 0 0)" : "white",
+                  color: INK,
+                }}
+              />
+              <button
+                onClick={sendDraftChat}
+                disabled={sendingDraftChat || !draftChatDraft.trim()}
+                style={{
+                  ...btnPrimary,
+                  opacity: sendingDraftChat || !draftChatDraft.trim() ? 0.5 : 1,
+                  cursor:
+                    sendingDraftChat || !draftChatDraft.trim() ? "not-allowed" : "pointer",
+                  alignSelf: "flex-end",
+                }}
+              >
+                {sendingDraftChat ? (
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+                ) : (
+                  <Sparkles size={14} />
+                )}
+                Enviar
+              </button>
+            </div>
+          </div>
         </div>
 
         <div

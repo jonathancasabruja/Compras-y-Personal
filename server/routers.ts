@@ -533,9 +533,21 @@ const purchaseOrdersRouter = router({
       createdBy: z.string().nullable().optional(),
       items: z.array(poItemInput),
       extraCosts: z.array(poExtraCostInput).optional(),
+      // Optional chat history from the NewPoDialog AI chat. Persisted
+      // to correction_chat so when someone re-opens the PO later they
+      // see the pre-save conversation.
+      correctionChat: z
+        .array(
+          z.object({
+            role: z.enum(["user", "assistant"]),
+            text: z.string(),
+            at: z.string(),
+          }),
+        )
+        .optional(),
     }))
     .mutation(async ({ input }) => {
-      const { items, extraCosts, ...poData } = input;
+      const { items, extraCosts, correctionChat, ...poData } = input;
       const normalizedItems = items.map((item) => {
         if (item.supplierUom && item.supplierQty) {
           const norm = normalizeUom(item.supplierQty, item.supplierUom);
@@ -554,6 +566,18 @@ const purchaseOrdersRouter = router({
       if (po) {
         await calculateAndSaveLandedCosts(po.id);
         await learnSupplierMappings(poData.supplier, normalizedItems);
+        // Persist the pre-save AI chat conversation if the user had one.
+        if (correctionChat && correctionChat.length > 0) {
+          const db = reqDb();
+          await db.execute(drizzleSql`
+            UPDATE purchase_orders
+            SET correction_chat = ${drizzleSql.raw(
+              `'${JSON.stringify(correctionChat).replace(/'/g, "''")}'::jsonb`,
+            )},
+                updated_at = NOW()
+            WHERE id = ${po.id}
+          `);
+        }
       }
       return po;
     }),
@@ -662,6 +686,127 @@ const purchaseOrdersRouter = router({
         manualCategoryExamples,
       });
     }),
+  /**
+   * Draft-mode AI chat for the 'Nueva OC' dialog. Operates on an
+   * in-memory draft — nothing in the DB. Returns a patch that the UI
+   * applies locally to the form state before the user saves.
+   *
+   * Same Claude pipeline as correctionChat, but:
+   *   - Takes the PDF bytes directly (caller holds them in memory)
+   *   - Takes the current draft object
+   *   - Takes the client-side chat history (caller keeps it in component state)
+   *   - Returns { assistantText, patch, chatHistory } — no DB writes
+   *
+   * Once the user clicks Save in the dialog, the caller can persist the
+   * final chatHistory onto the newly-created PO's correction_chat column.
+   */
+  draftCorrectionChat: publicProcedure
+    .input(
+      z.object({
+        pdfBase64: z.string().optional(),
+        draft: z.object({
+          supplier: z.string().nullable().optional(),
+          supplierInvoiceNumber: z.string().nullable().optional(),
+          date: z.string().optional(),
+          expectedDate: z.string().nullable().optional(),
+          currency: z.string().optional(),
+          notes: z.string().nullable().optional(),
+          items: z
+            .array(
+              z.object({
+                productCode: z.string(),
+                productDescription: z.string().nullable().optional(),
+                qty: z.number(),
+                unit: z.string().nullable().optional(),
+                unitPrice: z.number(),
+                totalPrice: z.number(),
+                supplierLotNumber: z.string().nullable().optional(),
+              }),
+            )
+            .optional(),
+          extraCosts: z
+            .array(
+              z.object({
+                costType: z.string(),
+                description: z.string(),
+                amount: z.number(),
+                allocationMethod: z.string(),
+              }),
+            )
+            .optional(),
+        }),
+        chatHistory: z
+          .array(
+            z.object({
+              role: z.enum(["user", "assistant"]),
+              text: z.string(),
+              at: z.string(),
+            }),
+          )
+          .default([]),
+        message: z.string().min(1).max(4000),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const [catalog, supplierMappings] = await Promise.all([
+        listCatalogForExtraction().catch(() => []),
+        listSupplierMappingsForExtraction().catch(() => []),
+      ]);
+
+      let result;
+      try {
+        result = await correctPoWithChat({
+          pdfBase64: input.pdfBase64 ?? null,
+          currentPo: {
+            poNumber: "(borrador nuevo)",
+            supplier: input.draft.supplier ?? "",
+            supplierInvoiceNumber: input.draft.supplierInvoiceNumber ?? null,
+            date: input.draft.date ?? "",
+            expectedDate: input.draft.expectedDate ?? null,
+            currency: input.draft.currency ?? null,
+            notes: input.draft.notes ?? null,
+            items: (input.draft.items ?? []).map((it) => ({
+              productCode: it.productCode,
+              productDescription: it.productDescription ?? null,
+              qty: it.qty,
+              unit: it.unit ?? null,
+              unitPrice: it.unitPrice,
+              totalPrice: it.totalPrice,
+              supplierLotNumber: it.supplierLotNumber ?? null,
+            })),
+            extraCosts: input.draft.extraCosts ?? [],
+          },
+          catalog: catalog.map((c: any) => ({
+            productCode: c.productCode,
+            name: c.name,
+            category: c.category,
+            unit: c.unit,
+          })),
+          supplierMappings,
+          chatHistory: input.chatHistory,
+          userMessage: input.message.trim(),
+        });
+      } catch (err: any) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: err?.message ?? "Error en la corrección con IA",
+        });
+      }
+
+      const now = new Date().toISOString();
+      const newHistory = [
+        ...input.chatHistory,
+        { role: "user" as const, text: input.message.trim(), at: now },
+        { role: "assistant" as const, text: result.assistantText, at: now },
+      ];
+
+      return {
+        assistantText: result.assistantText,
+        patch: result.patch ?? null,
+        chatHistory: newHistory,
+      };
+    }),
+
   /**
    * AI correction chat for a Purchase Order. Operator tells Claude what's
    * wrong; Claude re-reads the attached invoice PDF (if any) and returns

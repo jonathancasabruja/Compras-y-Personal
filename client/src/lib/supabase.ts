@@ -684,6 +684,9 @@ export interface CreatePoInput {
     amount: number;
     allocationMethod?: AllocationMethod;
   }>;
+  /** Pre-save AI chat history from NewPoDialog — persisted to
+   *  purchase_orders.correction_chat on the new row. */
+  correctionChat?: Array<{ role: "user" | "assistant"; text: string; at: string }>;
 }
 
 export async function createPurchaseOrder(input: CreatePoInput): Promise<PurchaseOrder | null> {
@@ -972,6 +975,68 @@ export async function purchaseOrderCorrectionChat(
   po: unknown;
 }> {
   return trpcMutate("purchaseOrders.correctionChat", { purchaseOrderId, message });
+}
+
+/**
+ * Draft-mode PO chat — used inside the 'Nueva OC' dialog BEFORE the PO
+ * is persisted. Returns a patch the caller applies locally to form
+ * state. Nothing hits the DB until the user actually clicks Save.
+ */
+export async function purchaseOrderDraftCorrectionChat(input: {
+  pdfBase64?: string;
+  draft: {
+    supplier?: string | null;
+    supplierInvoiceNumber?: string | null;
+    date?: string;
+    expectedDate?: string | null;
+    currency?: string;
+    notes?: string | null;
+    items?: Array<{
+      productCode: string;
+      productDescription?: string | null;
+      qty: number;
+      unit?: string | null;
+      unitPrice: number;
+      totalPrice: number;
+      supplierLotNumber?: string | null;
+    }>;
+    extraCosts?: Array<{
+      costType: string;
+      description: string;
+      amount: number;
+      allocationMethod: string;
+    }>;
+  };
+  chatHistory: CorrectionChatMessage[];
+  message: string;
+}): Promise<{
+  assistantText: string;
+  patch: {
+    supplier?: string;
+    supplierInvoiceNumber?: string;
+    date?: string;
+    expectedDate?: string;
+    currency?: string;
+    notes?: string;
+    items?: Array<{
+      productCode: string;
+      productDescription: string;
+      qty: number;
+      unit: string;
+      unitPrice: number;
+      totalPrice: number;
+      supplierLotNumber: string | null;
+    }>;
+    extraCosts?: Array<{
+      costType: string;
+      description: string;
+      amount: number;
+      allocationMethod: string;
+    }>;
+  } | null;
+  chatHistory: CorrectionChatMessage[];
+}> {
+  return trpcMutate("purchaseOrders.draftCorrectionChat", input);
 }
 
 export async function isInvoiceLibraryReady(): Promise<{ configured: boolean; storage: boolean }> {
