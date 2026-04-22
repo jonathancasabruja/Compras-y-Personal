@@ -13,6 +13,8 @@ import {
   Loader2,
   Upload,
   FileText,
+  Sparkles,
+  FileUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -29,6 +31,8 @@ import {
   uploadPoAttachment,
   deletePoAttachment,
   isStorageConfigured,
+  extractPoFromPdf,
+  isPoExtractorConfigured,
   type PurchaseOrder,
   type PurchaseOrderFull,
   type PoStatus,
@@ -781,6 +785,9 @@ function NewPoDialog({
     { productCode: "", productDescription: "", qty: "", unit: "kg", baseCostPerUnit: "" },
   ]);
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractorOk, setExtractorOk] = useState<boolean | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     nextPoNumber()
@@ -789,7 +796,70 @@ function NewPoDialog({
         setPoNumber(n);
       })
       .catch(() => void 0);
+    isPoExtractorConfigured()
+      .then(setExtractorOk)
+      .catch(() => setExtractorOk(false));
   }, []);
+
+  const onPdfChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ""; // reset so same file re-triggers change
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("PDF muy grande (máx 8 MB)");
+      return;
+    }
+    setExtracting(true);
+    try {
+      const extracted = await extractPoFromPdf(file);
+      // Pre-fill form fields (keep existing values the user may have typed)
+      if (!supplier.trim()) setSupplier(extracted.supplier || "");
+      if (!supplierInvoiceNumber.trim()) setSupplierInvoiceNumber(extracted.invoiceNumber || "");
+      if (extracted.date && /^\d{4}-\d{2}-\d{2}$/.test(extracted.date)) setDate(extracted.date);
+      if (extracted.currency) setCurrency(extracted.currency);
+      if (extracted.paymentTerms) {
+        setNotes((prev) =>
+          prev.trim() ? `${prev}\n${extracted.paymentTerms}` : extracted.paymentTerms || "",
+        );
+      }
+      // Overwrite items and append extra costs as additional items for review
+      const extractedItems: DraftItem[] = extracted.items.map((it) => ({
+        productCode: it.productCode || "",
+        productDescription: it.productDescription || "",
+        qty: String(it.qty ?? ""),
+        unit: it.unit || "kg",
+        baseCostPerUnit: String(it.unitPrice ?? ""),
+      }));
+      setItems(
+        extractedItems.length > 0
+          ? extractedItems
+          : [{ productCode: "", productDescription: "", qty: "", unit: "kg", baseCostPerUnit: "" }],
+      );
+
+      const parts: string[] = [`${extracted.items.length} ítem(s) extraídos`];
+      if (extracted.extraCosts.length > 0) {
+        const totalExtras = extracted.extraCosts.reduce((s, c) => s + c.amount, 0);
+        parts.push(
+          `${extracted.extraCosts.length} costo(s) extra por $${totalExtras.toFixed(2)} — revisa y agrégalos manualmente en Costos Extra`,
+        );
+      }
+      toast.success(parts.join(". "), { duration: 6000 });
+
+      if (extracted.extraCosts.length > 0) {
+        // Add the extras as a note block so they're not lost
+        const ecText = extracted.extraCosts
+          .map((c) => `• ${c.costType}: ${c.description || ""} = ${c.amount.toFixed(2)}`)
+          .join("\n");
+        setNotes((prev) =>
+          prev.trim() ? `${prev}\n\nCostos extra detectados:\n${ecText}` : `Costos extra detectados:\n${ecText}`,
+        );
+      }
+    } catch (err: any) {
+      toast.error(err?.message ?? "Error extrayendo PDF");
+    } finally {
+      setExtracting(false);
+    }
+  };
 
   const totalBase = useMemo(
     () =>
@@ -873,6 +943,57 @@ function NewPoDialog({
         </div>
 
         <div style={{ padding: "1rem 1.25rem", overflowY: "auto", flex: 1 }}>
+          {/* AI PDF extraction banner */}
+          <div
+            style={{
+              marginBottom: "1rem",
+              padding: "0.875rem 1rem",
+              background: "linear-gradient(135deg, oklch(0.97 0.04 200) 0%, oklch(0.97 0.05 280) 100%)",
+              border: `1px solid oklch(0.88 0.08 240)`,
+              borderRadius: 10,
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+              flexWrap: "wrap",
+            }}
+          >
+            <Sparkles size={20} style={{ color: "oklch(0.5 0.18 260)", flexShrink: 0 }} />
+            <div style={{ flex: "1 1 220px", minWidth: 180 }}>
+              <div style={{ fontSize: "0.875rem", fontWeight: 700, color: INK }}>
+                Auto-rellenar con PDF
+              </div>
+              <div style={{ fontSize: "0.75rem", color: MUTED, marginTop: 2 }}>
+                {extractorOk === false
+                  ? "Configura OPENAI_API_KEY en Railway para habilitar."
+                  : "Sube la factura del proveedor y la IA rellena proveedor, fecha y líneas."}
+              </div>
+            </div>
+            <input
+              ref={pdfInputRef}
+              type="file"
+              accept="application/pdf"
+              style={{ display: "none" }}
+              onChange={onPdfChosen}
+            />
+            <button
+              onClick={() => pdfInputRef.current?.click()}
+              disabled={extracting || extractorOk === false}
+              style={{
+                ...btnPrimary,
+                background: extractorOk === false ? MUTED : "oklch(0.55 0.18 260)",
+                borderColor: extractorOk === false ? MUTED : "oklch(0.55 0.18 260)",
+                opacity: extractorOk === false ? 0.6 : 1,
+              }}
+            >
+              {extracting ? (
+                <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+              ) : (
+                <FileUp size={14} />
+              )}
+              {extracting ? "Analizando…" : "Subir PDF"}
+            </button>
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <Field label="Número OC">
               <input

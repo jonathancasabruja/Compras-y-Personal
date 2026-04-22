@@ -803,6 +803,83 @@ export async function isStorageConfigured(): Promise<boolean> {
 }
 
 /**
+ * Read a File/Blob as base64 (no `data:...;base64,` prefix). Shared util
+ * for both attachment uploads and AI PDF extraction — the server expects
+ * raw base64 (no data-URL prefix) through tRPC.
+ */
+async function fileToBase64(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("FileReader returned non-string"));
+        return;
+      }
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ─── AI PDF extraction ────────────────────────────────────────────────────
+
+export interface ExtractedPo {
+  supplier: string;
+  invoiceNumber: string;
+  date: string;
+  currency: string;
+  paymentTerms: string | null;
+  totalAmount: number;
+  items: Array<{
+    productCode: string;
+    productDescription: string;
+    qty: number;
+    unit: string;
+    unitPrice: number;
+    totalPrice: number;
+    lotNumber: string | null;
+  }>;
+  extraCosts: Array<{
+    costType: string;
+    description: string;
+    amount: number;
+  }>;
+}
+
+export interface ExtractedCostInvoice {
+  invoiceNumber: string;
+  supplier: string;
+  date: string;
+  totalAmount: number;
+  currency: string;
+  costType: string;
+  notes: string | null;
+}
+
+export async function isPoExtractorConfigured(): Promise<boolean> {
+  const r = await trpcQuery<{ configured: boolean }>("purchaseOrders.extractorConfigured");
+  return r?.configured ?? false;
+}
+
+export async function extractPoFromPdf(file: File): Promise<ExtractedPo> {
+  const dataBase64 = await fileToBase64(file);
+  return trpcMutate<ExtractedPo>("purchaseOrders.extractInvoice", { dataBase64 });
+}
+
+export async function isCostInvoiceExtractorConfigured(): Promise<boolean> {
+  const r = await trpcQuery<{ configured: boolean }>("costInvoices.extractorConfigured");
+  return r?.configured ?? false;
+}
+
+export async function extractCostInvoiceFromPdf(file: File): Promise<ExtractedCostInvoice> {
+  const dataBase64 = await fileToBase64(file);
+  return trpcMutate<ExtractedCostInvoice>("costInvoices.extractInvoice", { dataBase64 });
+}
+
+/**
  * Read a File/Blob as base64 (no `data:...;base64,` prefix) in the browser
  * and push it through the tRPC upload procedure. Returns the newly
  * created attachment row — `fileUrl` is empty when server storage isn't
@@ -813,22 +890,7 @@ export async function uploadPoAttachment(
   file: File,
   documentType?: string,
 ): Promise<{ attachment: PoAttachment | null; storageConfigured: boolean }> {
-  const dataBase64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error);
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== "string") {
-        reject(new Error("FileReader returned non-string"));
-        return;
-      }
-      // Strip the data URL prefix so we send raw base64
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(file);
-  });
-
+  const dataBase64 = await fileToBase64(file);
   return trpcMutate<{ attachment: PoAttachment | null; storageConfigured: boolean }>(
     "purchaseOrders.attachments.upload",
     {

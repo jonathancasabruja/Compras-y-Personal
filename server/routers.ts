@@ -41,6 +41,11 @@ import {
   getCostInvoiceAllocationsForPo,
 } from "./purchasingDb";
 import { storagePut, isStorageConfigured } from "./storage";
+import {
+  extractPoFromPdf,
+  extractCostInvoiceFromPdf,
+  isExtractorConfigured,
+} from "./invoiceExtractor";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -610,6 +615,17 @@ const purchaseOrdersRouter = router({
   normalizeUomPreview: publicProcedure
     .input(z.object({ qty: z.number(), uom: z.string() }))
     .query(({ input }) => normalizeUom(input.qty, input.uom)),
+  /**
+   * AI PDF extractor. Client sends a base64 PDF (≤ 8 MB), server calls
+   * OpenAI gpt-4o-mini, returns structured PO data ready to prefill the
+   * "Nueva OC" dialog. Graceful error when OPENAI_API_KEY is missing.
+   */
+  extractorConfigured: publicProcedure.query(() => ({
+    configured: isExtractorConfigured(),
+  })),
+  extractInvoice: publicProcedure
+    .input(z.object({ dataBase64: z.string().min(1) }))
+    .mutation(({ input }) => extractPoFromPdf(input.dataBase64)),
   attachments: router({
     list: publicProcedure
       .input(z.object({ purchaseOrderId: z.number() }))
@@ -740,6 +756,12 @@ const costInvoicesRouter = router({
   allocationsForPo: publicProcedure
     .input(z.object({ purchaseOrderId: z.number() }))
     .query(({ input }) => getCostInvoiceAllocationsForPo(input.purchaseOrderId)),
+  extractorConfigured: publicProcedure.query(() => ({
+    configured: isExtractorConfigured(),
+  })),
+  extractInvoice: publicProcedure
+    .input(z.object({ dataBase64: z.string().min(1) }))
+    .mutation(({ input }) => extractCostInvoiceFromPdf(input.dataBase64)),
 });
 
 export const appRouter = router({

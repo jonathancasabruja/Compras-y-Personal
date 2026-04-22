@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Receipt,
   Plus,
@@ -8,6 +8,8 @@ import {
   Link2,
   ExternalLink,
   Loader2,
+  Sparkles,
+  FileUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -18,6 +20,8 @@ import {
   allocateCostInvoice,
   deallocateCostInvoice,
   listPurchaseOrders,
+  extractCostInvoiceFromPdf,
+  isCostInvoiceExtractorConfigured,
   type CostInvoice,
   type CostInvoiceFull,
   type PurchaseOrder,
@@ -584,6 +588,46 @@ function NewInvoiceDialog({
   const [currency, setCurrency] = useState("USD");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractorOk, setExtractorOk] = useState<boolean | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    isCostInvoiceExtractorConfigured()
+      .then(setExtractorOk)
+      .catch(() => setExtractorOk(false));
+  }, []);
+
+  const onPdfChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("PDF muy grande (máx 8 MB)");
+      return;
+    }
+    setExtracting(true);
+    try {
+      const extracted = await extractCostInvoiceFromPdf(file);
+      if (!invoiceNumber.trim()) setInvoiceNumber(extracted.invoiceNumber || "");
+      if (!supplier.trim()) setSupplier(extracted.supplier || "");
+      if (extracted.date && /^\d{4}-\d{2}-\d{2}$/.test(extracted.date)) setDate(extracted.date);
+      if (extracted.currency) setCurrency(extracted.currency);
+      if (extracted.costType) setCostType(extracted.costType);
+      if (extracted.totalAmount > 0) setTotalAmount(String(extracted.totalAmount));
+      if (extracted.notes) {
+        setNotes((prev) => (prev.trim() ? `${prev}\n${extracted.notes}` : extracted.notes || ""));
+      }
+      toast.success(
+        `Extraído: ${extracted.supplier} — ${extracted.totalAmount.toFixed(2)} ${extracted.currency}`,
+        { duration: 5000 },
+      );
+    } catch (err: any) {
+      toast.error(err?.message ?? "Error extrayendo PDF");
+    } finally {
+      setExtracting(false);
+    }
+  };
 
   const submit = async () => {
     if (!invoiceNumber.trim()) return toast.error("Número de factura requerido");
@@ -636,6 +680,57 @@ function NewInvoiceDialog({
         </div>
 
         <div style={{ padding: "1rem 1.25rem", overflowY: "auto", flex: 1 }}>
+          {/* AI PDF extraction banner */}
+          <div
+            style={{
+              marginBottom: "1rem",
+              padding: "0.875rem 1rem",
+              background: "linear-gradient(135deg, oklch(0.97 0.05 60) 0%, oklch(0.97 0.04 30) 100%)",
+              border: `1px solid oklch(0.88 0.08 60)`,
+              borderRadius: 10,
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+              flexWrap: "wrap",
+            }}
+          >
+            <Sparkles size={20} style={{ color: ORANGE, flexShrink: 0 }} />
+            <div style={{ flex: "1 1 220px", minWidth: 180 }}>
+              <div style={{ fontSize: "0.875rem", fontWeight: 700, color: INK }}>
+                Auto-rellenar con PDF
+              </div>
+              <div style={{ fontSize: "0.75rem", color: MUTED, marginTop: 2 }}>
+                {extractorOk === false
+                  ? "Configura OPENAI_API_KEY en Railway para habilitar."
+                  : "Sube la factura del freight-forwarder y la IA rellena los campos."}
+              </div>
+            </div>
+            <input
+              ref={pdfInputRef}
+              type="file"
+              accept="application/pdf"
+              style={{ display: "none" }}
+              onChange={onPdfChosen}
+            />
+            <button
+              onClick={() => pdfInputRef.current?.click()}
+              disabled={extracting || extractorOk === false}
+              style={{
+                ...btnPrimary,
+                background: extractorOk === false ? MUTED : ORANGE,
+                borderColor: extractorOk === false ? MUTED : ORANGE,
+                opacity: extractorOk === false ? 0.6 : 1,
+              }}
+            >
+              {extracting ? (
+                <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+              ) : (
+                <FileUp size={14} />
+              )}
+              {extracting ? "Analizando…" : "Subir PDF"}
+            </button>
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <Field label="Número de factura">
               <input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} style={inputStyle} />
