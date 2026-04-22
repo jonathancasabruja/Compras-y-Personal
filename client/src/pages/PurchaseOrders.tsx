@@ -789,7 +789,68 @@ type DraftItem = {
   qty: string;
   unit: string;
   baseCostPerUnit: string;
+  /** Optional weight in kg for allocation by weight. Falls back to qty when blank. */
+  weightKg: string;
+  /** Optional volume in L for allocation by volume. */
+  volumeL: string;
 };
+
+type AllocationMethod = "by_qty" | "by_weight" | "by_volume" | "by_value" | "fixed_manual";
+
+type DraftExtraCost = {
+  costType: string;
+  description: string;
+  amount: string;
+  allocationMethod: AllocationMethod;
+};
+
+const EXTRA_COST_TYPES = [
+  "freight",
+  "shipping",
+  "customs",
+  "insurance",
+  "handling",
+  "comisiones",
+  "other",
+] as const;
+
+const ALLOCATION_LABELS: Record<AllocationMethod, { es: string; hint: string }> = {
+  by_qty:       { es: "Por cantidad",    hint: "Se reparte proporcional a las unidades de cada línea" },
+  by_weight:    { es: "Por peso (kg)",   hint: "Usa weightKg si está presente, si no usa qty" },
+  by_volume:    { es: "Por volumen (L)", hint: "Usa volumeL de cada línea" },
+  by_value:     { es: "Por valor",       hint: "Proporcional al costo base (qty × unit cost)" },
+  fixed_manual: { es: "Dividido parejo", hint: "Se divide en partes iguales entre las líneas" },
+};
+
+/** Normalize whatever the AI returned (freight, flete, shipping, …) to
+ *  one of our canonical EXTRA_COST_TYPES. */
+function guessCostType(raw: string | null | undefined): string {
+  const v = (raw ?? "").toLowerCase().trim();
+  if (!v) return "other";
+  if (v.includes("flete") || v.includes("freight")) return "freight";
+  if (v.includes("ship")) return "shipping";
+  if (v.includes("aduana") || v.includes("custom")) return "customs";
+  if (v.includes("insur") || v.includes("seguro")) return "insurance";
+  if (v.includes("handl") || v.includes("maneja")) return "handling";
+  if (v.includes("comision") || v.includes("commission")) return "comisiones";
+  return "other";
+}
+
+/** Sensible default allocation method per cost type — freight typically
+ *  scales with weight, customs with value, etc. The user can override. */
+function defaultAllocationFor(costType: string): AllocationMethod {
+  switch (costType) {
+    case "freight":
+    case "shipping":
+    case "handling":
+      return "by_weight";
+    case "customs":
+    case "insurance":
+      return "by_value";
+    default:
+      return "by_weight";
+  }
+}
 
 function NewPoDialog({
   onClose,
@@ -811,8 +872,9 @@ function NewPoDialog({
   const [exchangeRate, setExchangeRate] = useState("1");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<DraftItem[]>([
-    { productCode: "", productDescription: "", qty: "", unit: "kg", baseCostPerUnit: "" },
+    { productCode: "", productDescription: "", qty: "", unit: "kg", baseCostPerUnit: "", weightKg: "", volumeL: "" },
   ]);
+  const [extras, setExtras] = useState<DraftExtraCost[]>([]);
   const [saving, setSaving] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractorOk, setExtractorOk] = useState<boolean | null>(null);
@@ -850,16 +912,25 @@ function NewPoDialog({
         qty: String(it.qty ?? ""),
         unit: it.unit || "kg",
         baseCostPerUnit: String(it.unitPrice ?? ""),
+        // For LBS/KG raw materials the qty IS the weight. For unit-count
+        // items (cans, bottles) we leave weight blank — the server's
+        // calculateAndSaveLandedCosts falls back to qty when weightKg
+        // isn't set, so weight-based allocation still works.
+        weightKg: /^(lbs?|kg)$/i.test((it.unit || "").trim()) ? String(it.qty ?? "") : "",
+        volumeL: "",
       }));
       setItems(extractedItems);
     }
     if (ex?.extraCosts && ex.extraCosts.length > 0) {
-      const ecText = ex.extraCosts
-        .map((c) => `• ${c.costType}: ${c.description || ""} = ${c.amount.toFixed(2)}`)
-        .join("\n");
-      setNotes((prev) =>
-        prev.trim() ? `${prev}\n\nCostos extra detectados:\n${ecText}` : `Costos extra detectados:\n${ecText}`,
-      );
+      // Pre-fill the extras UI directly rather than dumping a text note —
+      // this way the numbers flow into the landed-cost calculation.
+      const mappedExtras: DraftExtraCost[] = ex.extraCosts.map((c) => ({
+        costType: guessCostType(c.costType),
+        description: c.description || c.costType || "",
+        amount: String(c.amount ?? ""),
+        allocationMethod: defaultAllocationFor(guessCostType(c.costType)),
+      }));
+      setExtras(mappedExtras);
     }
     setShowPicker(false);
     toast.success(
@@ -944,10 +1015,21 @@ function NewPoDialog({
   const addRow = () =>
     setItems((prev) => [
       ...prev,
-      { productCode: "", productDescription: "", qty: "", unit: "kg", baseCostPerUnit: "" },
+      { productCode: "", productDescription: "", qty: "", unit: "kg", baseCostPerUnit: "", weightKg: "", volumeL: "" },
     ]);
 
   const removeRow = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx));
+
+  const addExtra = () =>
+    setExtras((prev) => [
+      ...prev,
+      { costType: "freight", description: "", amount: "", allocationMethod: "by_weight" },
+    ]);
+
+  const updateExtra = (idx: number, patch: Partial<DraftExtraCost>) =>
+    setExtras((prev) => prev.map((ec, i) => (i === idx ? { ...ec, ...patch } : ec)));
+
+  const removeExtra = (idx: number) => setExtras((prev) => prev.filter((_, i) => i !== idx));
 
   const submit = async () => {
     if (!poNumber.trim()) return toast.error("Número de OC requerido");
@@ -960,8 +1042,19 @@ function NewPoDialog({
         qty: parseFloat(i.qty),
         unit: i.unit.trim() || null,
         baseCostPerUnit: parseFloat(i.baseCostPerUnit || "0"),
+        weightKg: i.weightKg.trim() ? parseFloat(i.weightKg) : null,
+        volumeL: i.volumeL.trim() ? parseFloat(i.volumeL) : null,
       }));
     if (cleanItems.length === 0) return toast.error("Agrega al menos 1 ítem válido");
+
+    const cleanExtras = extras
+      .filter((ec) => ec.costType.trim() && parseFloat(ec.amount || "0") > 0)
+      .map((ec) => ({
+        costType: ec.costType.trim(),
+        description: ec.description.trim() || null,
+        amount: parseFloat(ec.amount),
+        allocationMethod: ec.allocationMethod,
+      }));
 
     setSaving(true);
     try {
@@ -974,6 +1067,7 @@ function NewPoDialog({
         exchangeRate: parseFloat(exchangeRate) || 1,
         notes: notes.trim() || null,
         items: cleanItems,
+        extraCosts: cleanExtras.length > 0 ? cleanExtras : undefined,
       };
       const po = await createPurchaseOrder(input);
       if (po) {
@@ -1230,9 +1324,119 @@ function NewPoDialog({
             <strong>{fmtMoney(totalBase, currency)}</strong>
           </div>
 
+          {/* Extra costs / landed cost allocation */}
+          <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3 style={{ fontSize: "0.9375rem", fontWeight: 700, color: INK, margin: 0 }}>
+              Costos extra (landed cost)
+            </h3>
+            <button onClick={addExtra} style={btnSecondary}>
+              <Plus size={14} /> Agregar costo
+            </button>
+          </div>
+          <p style={{ fontSize: "0.7rem", color: MUTED, margin: "4px 0 0.5rem" }}>
+            Flete, aduana, seguro, comisiones. El método de asignación controla cómo se distribuye cada costo entre las líneas para calcular el <em>landed cost per unit</em>.
+          </p>
+          {extras.length === 0 ? (
+            <div style={{ padding: "0.625rem", background: SOFT, borderRadius: 8, fontSize: "0.75rem", color: MUTED, textAlign: "center" }}>
+              Sin costos extra. Agrega uno o asigna una factura de Fletes y Gastos después de crear la OC.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={miniTable}>
+                <thead>
+                  <tr>
+                    <Th style={{ width: 110 }}>Tipo</Th>
+                    <Th>Descripción</Th>
+                    <Th style={{ width: 110 }}>Monto</Th>
+                    <Th style={{ width: 160 }}>Asignación</Th>
+                    <Th style={{ width: 30 }}></Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {extras.map((ec, idx) => (
+                    <tr key={idx}>
+                      <Td style={{ padding: 4 }}>
+                        <select
+                          value={ec.costType}
+                          onChange={(e) => updateExtra(idx, { costType: e.target.value })}
+                          style={inputStyle}
+                        >
+                          {EXTRA_COST_TYPES.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </Td>
+                      <Td style={{ padding: 4 }}>
+                        <input
+                          value={ec.description}
+                          onChange={(e) => updateExtra(idx, { description: e.target.value })}
+                          style={inputStyle}
+                          placeholder="ej. Flete YCH → Panama"
+                        />
+                      </Td>
+                      <Td style={{ padding: 4 }}>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={ec.amount}
+                          onChange={(e) => updateExtra(idx, { amount: e.target.value })}
+                          style={{ ...inputStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+                          placeholder="0.00"
+                        />
+                      </Td>
+                      <Td style={{ padding: 4 }}>
+                        <select
+                          value={ec.allocationMethod}
+                          onChange={(e) =>
+                            updateExtra(idx, { allocationMethod: e.target.value as AllocationMethod })
+                          }
+                          style={inputStyle}
+                          title={ALLOCATION_LABELS[ec.allocationMethod].hint}
+                        >
+                          {(Object.keys(ALLOCATION_LABELS) as AllocationMethod[]).map((m) => (
+                            <option key={m} value={m}>{ALLOCATION_LABELS[m].es}</option>
+                          ))}
+                        </select>
+                      </Td>
+                      <Td style={{ padding: 4, textAlign: "center" }}>
+                        <button onClick={() => removeExtra(idx)} style={iconBtnDanger} aria-label="Eliminar">
+                          <Trash2 size={14} />
+                        </button>
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Running totals including allocation */}
+          {extras.length > 0 && (
+            <div style={{ marginTop: "0.75rem", textAlign: "right", fontSize: "0.875rem", color: INK }}>
+              <div>
+                <span style={{ color: MUTED, marginRight: 8 }}>Total costos extra:</span>
+                <strong>
+                  {fmtMoney(
+                    extras.reduce((s, ec) => s + (parseFloat(ec.amount) || 0), 0),
+                    currency,
+                  )}
+                </strong>
+              </div>
+              <div style={{ marginTop: 3, fontSize: "0.9375rem" }}>
+                <span style={{ color: MUTED, marginRight: 8 }}>Total aterrizado estimado:</span>
+                <strong style={{ color: CYAN }}>
+                  {fmtMoney(
+                    totalBase + extras.reduce((s, ec) => s + (parseFloat(ec.amount) || 0), 0),
+                    currency,
+                  )}
+                </strong>
+              </div>
+            </div>
+          )}
+
           <p style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: MUTED }}>
-            Los costos de flete y aduana se asignan después en <strong>Fletes y Gastos</strong>.
-            La carga de PDFs por IA y adjuntos vendrán en la siguiente fase.
+            Al guardar, el servidor recalcula automáticamente el <em>landed cost per unit</em> de cada línea usando el método de asignación elegido. Puedes ver el desglose en el detalle de la OC.
           </p>
         </div>
 
