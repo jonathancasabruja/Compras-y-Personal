@@ -15,6 +15,7 @@ import {
   FileText,
   Sparkles,
   FileUp,
+  FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -33,6 +34,7 @@ import {
   isStorageConfigured,
   extractPoFromPdf,
   isPoExtractorConfigured,
+  linkInvoiceToPo,
   type PurchaseOrder,
   type PurchaseOrderFull,
   type PoStatus,
@@ -40,6 +42,8 @@ import {
   type PoAttachment,
 } from "@/lib/supabase";
 import { compressPdfClientSide, formatBytes } from "@/lib/pdfCompress";
+import { InvoiceLibraryPicker } from "@/components/InvoiceLibraryPicker";
+import type { SupplierInvoice, InvoiceCategory } from "@/lib/supabase";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Órdenes de Compra — Phase 1d MVP.
@@ -794,6 +798,10 @@ function NewPoDialog({
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
+  // If the user opened this dialog by picking an invoice from the library,
+  // we keep its id so we can back-link the resulting PO once it's created.
+  const [sourceInvoiceId, setSourceInvoiceId] = useState<number | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
   const [suggestedNumber, setSuggestedNumber] = useState("");
   const [poNumber, setPoNumber] = useState("");
   const [supplier, setSupplier] = useState("");
@@ -821,6 +829,44 @@ function NewPoDialog({
       .then(setExtractorOk)
       .catch(() => setExtractorOk(false));
   }, []);
+
+  // Apply a library invoice's extracted data to this dialog's form fields.
+  // Leaves existing values alone if the user already typed something —
+  // libraries are hints, not overrides.
+  const applyFromInvoice = (inv: SupplierInvoice) => {
+    setSourceInvoiceId(inv.id);
+    const ex = inv.extractedData;
+    if (inv.supplier && !supplier.trim()) setSupplier(inv.supplier);
+    if (inv.invoiceNumber && !supplierInvoiceNumber.trim()) setSupplierInvoiceNumber(inv.invoiceNumber);
+    if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) setDate(inv.invoiceDate);
+    if (inv.currency) setCurrency(inv.currency);
+    if (ex?.paymentTerms) {
+      setNotes((prev) => (prev.trim() ? `${prev}\n${ex.paymentTerms}` : ex.paymentTerms || ""));
+    }
+    if (ex?.items && ex.items.length > 0) {
+      const extractedItems: DraftItem[] = ex.items.map((it) => ({
+        productCode: it.productCode || "",
+        productDescription: it.productDescription || "",
+        qty: String(it.qty ?? ""),
+        unit: it.unit || "kg",
+        baseCostPerUnit: String(it.unitPrice ?? ""),
+      }));
+      setItems(extractedItems);
+    }
+    if (ex?.extraCosts && ex.extraCosts.length > 0) {
+      const ecText = ex.extraCosts
+        .map((c) => `• ${c.costType}: ${c.description || ""} = ${c.amount.toFixed(2)}`)
+        .join("\n");
+      setNotes((prev) =>
+        prev.trim() ? `${prev}\n\nCostos extra detectados:\n${ecText}` : `Costos extra detectados:\n${ecText}`,
+      );
+    }
+    setShowPicker(false);
+    toast.success(
+      `Pre-rellenado desde ${inv.supplier ?? "factura"}: ${ex?.items?.length ?? 0} ítem(s), ${ex?.extraCosts?.length ?? 0} costo(s) extra`,
+      { duration: 4000 },
+    );
+  };
 
   const onPdfChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -931,6 +977,12 @@ function NewPoDialog({
       };
       const po = await createPurchaseOrder(input);
       if (po) {
+        // If the user picked from the invoice library, back-link so the
+        // invoice shows "OC #N" chip and doesn't accidentally get used
+        // again for another PO.
+        if (sourceInvoiceId) {
+          await linkInvoiceToPo(sourceInvoiceId, po.id).catch(() => undefined);
+        }
         toast.success(`OC ${po.poNumber} creada`);
         await onCreated();
       } else {
@@ -964,7 +1016,7 @@ function NewPoDialog({
         </div>
 
         <div style={{ padding: "1rem 1.25rem", overflowY: "auto", flex: 1 }}>
-          {/* AI PDF extraction banner */}
+          {/* Auto-fill banner: primary path = library picker, fallback = direct PDF upload */}
           <div
             style={{
               marginBottom: "1rem",
@@ -981,12 +1033,16 @@ function NewPoDialog({
             <Sparkles size={20} style={{ color: "oklch(0.5 0.18 260)", flexShrink: 0 }} />
             <div style={{ flex: "1 1 220px", minWidth: 180 }}>
               <div style={{ fontSize: "0.875rem", fontWeight: 700, color: INK }}>
-                Auto-rellenar con PDF
+                Auto-rellenar desde repositorio
               </div>
               <div style={{ fontSize: "0.75rem", color: MUTED, marginTop: 2 }}>
-                {extractorOk === false
-                  ? "Configura OPENAI_API_KEY en Railway para habilitar."
-                  : "Sube la factura del proveedor y la IA rellena proveedor, fecha y líneas."}
+                {sourceInvoiceId ? (
+                  <span style={{ color: "oklch(0.4 0.15 150)", fontWeight: 600 }}>
+                    ✓ Pre-rellenado desde factura #{sourceInvoiceId}. Los campos arriba son editables.
+                  </span>
+                ) : (
+                  <>Elige una factura ya subida al repositorio (clasificada por IA) y los campos se rellenan.</>
+                )}
               </div>
             </div>
             <input
@@ -997,13 +1053,23 @@ function NewPoDialog({
               onChange={onPdfChosen}
             />
             <button
-              onClick={() => pdfInputRef.current?.click()}
-              disabled={extracting || extractorOk === false}
+              onClick={() => setShowPicker(true)}
               style={{
                 ...btnPrimary,
-                background: extractorOk === false ? MUTED : "oklch(0.55 0.18 260)",
-                borderColor: extractorOk === false ? MUTED : "oklch(0.55 0.18 260)",
-                opacity: extractorOk === false ? 0.6 : 1,
+                background: "oklch(0.55 0.18 260)",
+                borderColor: "oklch(0.55 0.18 260)",
+              }}
+            >
+              <FolderOpen size={14} />
+              {sourceInvoiceId ? "Cambiar factura" : "Seleccionar factura"}
+            </button>
+            <button
+              onClick={() => pdfInputRef.current?.click()}
+              disabled={extracting || extractorOk === false}
+              title={extractorOk === false ? "Configura OPENAI_API_KEY en Railway para habilitar" : "Subir un PDF directamente (sin guardar en el repositorio)"}
+              style={{
+                ...btnSecondary,
+                opacity: extractorOk === false ? 0.5 : 1,
               }}
             >
               {extracting ? (
@@ -1011,9 +1077,18 @@ function NewPoDialog({
               ) : (
                 <FileUp size={14} />
               )}
-              {extracting ? "Analizando…" : "Subir PDF"}
+              {extracting ? "Analizando…" : "Subir PDF directo"}
             </button>
           </div>
+
+          {showPicker && (
+            <InvoiceLibraryPicker
+              allowedCategories={["brewing_raw_materials", "brewing_packaging", "brewing_equipment"]}
+              title="Elige una factura para esta OC"
+              onClose={() => setShowPicker(false)}
+              onPick={applyFromInvoice}
+            />
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <Field label="Número OC">

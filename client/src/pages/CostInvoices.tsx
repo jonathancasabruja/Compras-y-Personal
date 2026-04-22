@@ -10,6 +10,7 @@ import {
   Loader2,
   Sparkles,
   FileUp,
+  FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -22,10 +23,13 @@ import {
   listPurchaseOrders,
   extractCostInvoiceFromPdf,
   isCostInvoiceExtractorConfigured,
+  linkInvoiceToCostInvoice,
   type CostInvoice,
   type CostInvoiceFull,
   type PurchaseOrder,
+  type SupplierInvoice,
 } from "@/lib/supabase";
+import { InvoiceLibraryPicker } from "@/components/InvoiceLibraryPicker";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Fletes y Gastos — Phase 1d MVP.
@@ -590,6 +594,23 @@ function NewInvoiceDialog({
   const [saving, setSaving] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractorOk, setExtractorOk] = useState<boolean | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [sourceInvoiceId, setSourceInvoiceId] = useState<number | null>(null);
+
+  const applyFromInvoice = (inv: SupplierInvoice) => {
+    setSourceInvoiceId(inv.id);
+    if (inv.invoiceNumber && !invoiceNumber.trim()) setInvoiceNumber(inv.invoiceNumber);
+    if (inv.supplier && !supplier.trim()) setSupplier(inv.supplier);
+    if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) setDate(inv.invoiceDate);
+    if (inv.currency) setCurrency(inv.currency);
+    if (inv.totalAmount != null && inv.totalAmount > 0) setTotalAmount(String(inv.totalAmount));
+    if (inv.briefDescription && !notes.trim()) setNotes(inv.briefDescription);
+    // Cost invoices only come from the library when category = logistics; the
+    // AI has already picked a costType subtype; fall back to "freight".
+    setCostType(inv.extractedData?.category === "logistics" ? "freight" : costType);
+    setShowPicker(false);
+    toast.success(`Pre-rellenado desde ${inv.supplier ?? "factura"}`, { duration: 3000 });
+  };
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -647,6 +668,9 @@ function NewInvoiceDialog({
         notes: notes.trim() || null,
       });
       if (inv) {
+        if (sourceInvoiceId) {
+          await linkInvoiceToCostInvoice(sourceInvoiceId, inv.id).catch(() => undefined);
+        }
         toast.success(`Factura ${inv.invoiceNumber} creada`);
         await onCreated();
       } else {
@@ -697,12 +721,16 @@ function NewInvoiceDialog({
             <Sparkles size={20} style={{ color: ORANGE, flexShrink: 0 }} />
             <div style={{ flex: "1 1 220px", minWidth: 180 }}>
               <div style={{ fontSize: "0.875rem", fontWeight: 700, color: INK }}>
-                Auto-rellenar con PDF
+                Auto-rellenar desde repositorio
               </div>
               <div style={{ fontSize: "0.75rem", color: MUTED, marginTop: 2 }}>
-                {extractorOk === false
-                  ? "Configura OPENAI_API_KEY en Railway para habilitar."
-                  : "Sube la factura del freight-forwarder y la IA rellena los campos."}
+                {sourceInvoiceId ? (
+                  <span style={{ color: "oklch(0.4 0.15 150)", fontWeight: 600 }}>
+                    ✓ Pre-rellenado desde factura #{sourceInvoiceId}.
+                  </span>
+                ) : (
+                  "Elige una factura de flete ya clasificada por IA en el repositorio."
+                )}
               </div>
             </div>
             <input
@@ -713,23 +741,36 @@ function NewInvoiceDialog({
               onChange={onPdfChosen}
             />
             <button
+              onClick={() => setShowPicker(true)}
+              style={{ ...btnPrimary, background: ORANGE, borderColor: ORANGE }}
+            >
+              <FolderOpen size={14} />
+              {sourceInvoiceId ? "Cambiar factura" : "Seleccionar factura"}
+            </button>
+            <button
               onClick={() => pdfInputRef.current?.click()}
               disabled={extracting || extractorOk === false}
-              style={{
-                ...btnPrimary,
-                background: extractorOk === false ? MUTED : ORANGE,
-                borderColor: extractorOk === false ? MUTED : ORANGE,
-                opacity: extractorOk === false ? 0.6 : 1,
-              }}
+              title={extractorOk === false ? "Configura OPENAI_API_KEY en Railway" : "Subir un PDF directo (sin guardar en el repositorio)"}
+              style={{ ...btnSecondary, opacity: extractorOk === false ? 0.5 : 1 }}
             >
               {extracting ? (
                 <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
               ) : (
                 <FileUp size={14} />
               )}
-              {extracting ? "Analizando…" : "Subir PDF"}
+              {extracting ? "Analizando…" : "Subir PDF directo"}
             </button>
           </div>
+
+          {showPicker && (
+            <InvoiceLibraryPicker
+              allowedCategories={["logistics"]}
+              accent={ORANGE}
+              title="Elige una factura de flete / aduana / comisión"
+              onClose={() => setShowPicker(false)}
+              onPick={applyFromInvoice}
+            />
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <Field label="Número de factura">

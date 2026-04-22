@@ -987,6 +987,17 @@ export async function deleteInvoiceFromLibrary(id: number): Promise<void> {
   await trpcMutate<{ ok: true }>("invoiceLibrary.delete", { id });
 }
 
+/** Back-link a library invoice to a PO (used after Nueva OC creates a row
+ *  from a picked invoice — pins the invoice so it can't be picked again
+ *  unless the user explicitly shows "ya asignadas"). */
+export async function linkInvoiceToPo(invoiceId: number, poId: number | null): Promise<void> {
+  await trpcMutate<{ ok: true }>("invoiceLibrary.linkToPo", { invoiceId, poId });
+}
+
+export async function linkInvoiceToCostInvoice(invoiceId: number, costInvoiceId: number | null): Promise<void> {
+  await trpcMutate<{ ok: true }>("invoiceLibrary.linkToCostInvoice", { invoiceId, costInvoiceId });
+}
+
 /**
  * Read a File/Blob as base64 (no `data:...;base64,` prefix) in the browser
  * and push it through the tRPC upload procedure. Returns the newly
