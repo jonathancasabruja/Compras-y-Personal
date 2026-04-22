@@ -39,6 +39,8 @@ import {
   allocateCostInvoice,
   deallocateCostInvoice,
   getCostInvoiceAllocationsForPo,
+  listCatalogForExtraction,
+  listSupplierMappingsForExtraction,
 } from "./purchasingDb";
 import { storagePut, storageDelete, isStorageConfigured } from "./storage";
 import {
@@ -625,7 +627,24 @@ const purchaseOrdersRouter = router({
   })),
   extractInvoice: publicProcedure
     .input(z.object({ dataBase64: z.string().min(1) }))
-    .mutation(({ input }) => extractPoFromPdf(input.dataBase64)),
+    .mutation(async ({ input }) => {
+      // Feed the extractor authoritative brewery data so it uses canonical
+      // product codes instead of the supplier's random codes. Both queries
+      // are cheap — catalog ~50 rows, supplier mappings ~25 rows.
+      const [catalog, supplierMappings] = await Promise.all([
+        listCatalogForExtraction().catch(() => []),
+        listSupplierMappingsForExtraction().catch(() => []),
+      ]);
+      return extractPoFromPdf(input.dataBase64, {
+        catalog: catalog.map((c) => ({
+          productCode: c.productCode,
+          name: c.name,
+          category: c.category,
+          unit: c.unit,
+        })),
+        supplierMappings,
+      });
+    }),
   attachments: router({
     list: publicProcedure
       .input(z.object({ purchaseOrderId: z.number() }))

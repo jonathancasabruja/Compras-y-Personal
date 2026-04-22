@@ -336,6 +336,56 @@ export async function getPoAttachments(purchaseOrderId: number): Promise<Purchas
     .orderBy(asc(purchaseOrderAttachments.id));
 }
 
+// ─── Extraction context helpers ─────────────────────────────────────────────
+// Feed the AI extractor authoritative catalog data (raw materials + learned
+// supplier mappings) so it outputs brewery-canonical codes instead of
+// hallucinating. These tables live in the shared Supabase DB but are owned
+// by brewery — we only read.
+
+export type CatalogRow = {
+  productCode: string;
+  name: string;
+  category: string;
+  unit: string;
+  supplier: string | null;
+};
+
+export async function listCatalogForExtraction(): Promise<CatalogRow[]> {
+  const db = reqDb();
+  const rows = await db.execute(sql`
+    SELECT
+      product_code AS "productCode",
+      name,
+      category::text AS category,
+      unit::text AS unit,
+      supplier
+    FROM raw_materials
+    WHERE product_code IS NOT NULL AND product_code <> ''
+    ORDER BY category, product_code
+  `);
+  return rows as unknown as CatalogRow[];
+}
+
+export type SupplierMappingHint = {
+  supplierName: string;
+  supplierDescription: string;
+  internalProductCode: string;
+  timesUsed: number;
+};
+
+export async function listSupplierMappingsForExtraction(): Promise<SupplierMappingHint[]> {
+  const db = reqDb();
+  const rows = await db.select({
+    supplierName: supplierProductMappings.supplierName,
+    supplierDescription: supplierProductMappings.supplierDescription,
+    internalProductCode: supplierProductMappings.internalProductCode,
+    timesUsed: supplierProductMappings.timesUsed,
+  })
+    .from(supplierProductMappings)
+    .orderBy(desc(supplierProductMappings.timesUsed));
+  return rows;
+}
+
 // ─── Supplier Product Mappings ──────────────────────────────────────────────
 export async function getSupplierProductMappings(
   supplierName?: string,

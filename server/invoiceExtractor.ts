@@ -119,7 +119,7 @@ const PO_SCHEMA = {
   ],
 } as const;
 
-const PO_PROMPT = `Extract data from this supplier invoice / purchase order PDF for a BREWERY in Panama (Casa Bruja).
+const PO_PROMPT_BASE = `Extract data from this supplier invoice / purchase order PDF for a BREWERY in Panama (Casa Bruja).
 
 CRITICAL RULES:
 1. QUANTITY is WEIGHT in LBS or KG for raw materials (hops, malt, yeast). Look for columns like "Stock Qty", "Net Weight", or values ending in "LBS"/"KG" (e.g. "44.0LBS", "22.0 LBS").
@@ -130,12 +130,68 @@ CRITICAL RULES:
 3. UNIT PRICE: derive from line total ÷ weight qty when needed. Example: $605.05 total for 44 LBS → unitPrice = 13.7511.
 4. EXTRA COSTS: freight, shipping, insurance, customs, handling, surcharges — usually at the bottom of the invoice. Labels include "Freight", "Shipping", "USA Freight", "Flete", "Handling", "Aduana", "Comision".
 5. LOT NUMBERS: Values like P91-JUCIT9059, P92-JUMOS9116, 25-0058 are LOT NUMBERS (do NOT confuse with invoice numbers).
-6. PRODUCT CODES: if the supplier uses their own code, pass it through. Casa Bruja's internal codes follow patterns like HOPS-CITRA, HOPS-MOSAIC, MALT-PILSNER, YEAST-US05, PACK-CAN-330, PACK-LABEL-IPA.
+6. PRODUCT CODES — this is the most important rule:
+   - You will be given a CATALOG below of Casa Bruja's canonical product codes. ALWAYS match the invoice line to one of those codes when any reasonable match exists. Prefer fuzzy matching on the product name.
+   - You will also be given a list of LEARNED MAPPINGS from past invoices ("supplier X calls their product 'Foo Bar 2025' — that's always productCode YYY"). Use these as authoritative hints.
+   - Only fall back to the supplier's raw code when nothing in the catalog matches at all.
 
 If a field is not present, return an empty string for strings and 0 for numbers. Return date in YYYY-MM-DD. For fields required to be string-or-null, use null explicitly when unknown.`;
 
-export async function extractPoFromPdf(dataBase64: string): Promise<ExtractedPo> {
+export type PoExtractorContext = {
+  catalog?: Array<{ productCode: string; name: string; category: string; unit: string }>;
+  supplierMappings?: Array<{
+    supplierName: string;
+    supplierDescription: string;
+    internalProductCode: string;
+    timesUsed: number;
+  }>;
+};
+
+function buildPoPrompt(ctx: PoExtractorContext): string {
+  const parts: string[] = [PO_PROMPT_BASE];
+
+  if (ctx.catalog && ctx.catalog.length > 0) {
+    const byCategory = new Map<string, Array<{ productCode: string; name: string; unit: string }>>();
+    for (const row of ctx.catalog) {
+      if (!byCategory.has(row.category)) byCategory.set(row.category, []);
+      byCategory.get(row.category)!.push(row);
+    }
+    const blocks: string[] = [];
+    for (const [cat, rows] of byCategory) {
+      blocks.push(
+        `### ${cat.toUpperCase()}\n` +
+          rows.map((r) => `  ${r.productCode}  —  ${r.name}  (${r.unit})`).join("\n"),
+      );
+    }
+    parts.push(
+      "\n\nCATALOG — use these exact product_code values whenever the invoice line matches:\n" +
+        blocks.join("\n\n"),
+    );
+  }
+
+  if (ctx.supplierMappings && ctx.supplierMappings.length > 0) {
+    const hints = ctx.supplierMappings
+      .slice(0, 80) // cap context size — the most-used ones come first
+      .map(
+        (m) =>
+          `  "${m.supplierName}" → "${m.supplierDescription}" = ${m.internalProductCode} (seen ${m.timesUsed}×)`,
+      )
+      .join("\n");
+    parts.push(
+      "\n\nLEARNED SUPPLIER MAPPINGS — when a line on this invoice matches one of these supplier descriptions, use the mapped code directly:\n" +
+        hints,
+    );
+  }
+
+  return parts.join("");
+}
+
+export async function extractPoFromPdf(
+  dataBase64: string,
+  ctx: PoExtractorContext = {},
+): Promise<ExtractedPo> {
   const openai = client();
+  const prompt = buildPoPrompt(ctx);
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
@@ -149,7 +205,7 @@ export async function extractPoFromPdf(dataBase64: string): Promise<ExtractedPo>
               file_data: toDataUrl(dataBase64),
             },
           } as unknown as OpenAI.Chat.ChatCompletionContentPart,
-          { type: "text", text: PO_PROMPT },
+          { type: "text", text: prompt },
         ],
       },
     ],
