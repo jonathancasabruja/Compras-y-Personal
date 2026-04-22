@@ -12,6 +12,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
     "@hookform/resolvers": "^5.2.2",
     "@supabase/supabase-js": "^2.45.0",
     "openai": "^4.73.0",

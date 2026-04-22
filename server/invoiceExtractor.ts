@@ -1,23 +1,39 @@
 /**
  * AI-powered PDF extraction for purchase orders and cost invoices.
  *
- * Uses the official OpenAI SDK directly (not the Vercel AI SDK — see
- * earlier attempt, which ran into API shape drift across ai v4 ↔ v5 ↔ v6).
- * The OpenAI chat-completions API natively supports PDF inputs via the
- * `file` content type with a base64 data-URL, and structured output via
- * `response_format: json_schema` with strict mode.
+ * DUAL-MODEL: prefers Claude Sonnet if ANTHROPIC_API_KEY is set (better
+ * at reading scanned / photographed invoices because Claude sees the PDF
+ * natively as images and follows nuanced classification rules better
+ * than GPT on our test cases). Falls back to GPT-4o when the Anthropic
+ * key is missing so nothing breaks during the rollout window.
  *
- * Env: OPENAI_API_KEY. If unset, both exported extract* functions throw
- * with a friendly Spanish error that the UI surfaces to the user.
+ * - Claude: uses the `document` content type with tool-use for structured
+ *   output (tool_choice forces the response through the schema).
+ * - OpenAI: chat-completions with `file` content type + `response_format:
+ *   json_schema` strict mode.
+ *
+ * Set ONE of these env vars to activate:
+ *   ANTHROPIC_API_KEY  (preferred; get from console.anthropic.com)
+ *   OPENAI_API_KEY     (fallback; already set on Railway)
  */
 
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 
-export function isExtractorConfigured(): boolean {
-  return !!process.env.OPENAI_API_KEY;
+/** Which backend is active for this process. */
+export type ExtractorBackend = "claude-sonnet" | "gpt-4o" | "none";
+
+export function getExtractorBackend(): ExtractorBackend {
+  if (process.env.ANTHROPIC_API_KEY) return "claude-sonnet";
+  if (process.env.OPENAI_API_KEY) return "gpt-4o";
+  return "none";
 }
 
-function client(): OpenAI {
+export function isExtractorConfigured(): boolean {
+  return getExtractorBackend() !== "none";
+}
+
+function openaiClient(): OpenAI {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -28,9 +44,129 @@ function client(): OpenAI {
   return new OpenAI({ apiKey });
 }
 
+function anthropicClient(): Anthropic {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
+  return new Anthropic({ apiKey });
+}
+
 function toDataUrl(b64: string): string {
   const clean = b64.replace(/^data:application\/pdf;base64,/, "");
   return `data:application/pdf;base64,${clean}`;
+}
+
+function cleanBase64(b64: string): string {
+  return b64.replace(/^data:application\/pdf;base64,/, "");
+}
+
+/**
+ * Claude's tool-use requires a JSON Schema input_schema. OpenAI's strict
+ * json_schema is compatible — except Claude doesn't support `[type1, null]`
+ * union types inline; it wants `anyOf`. Convert the OpenAI-flavoured
+ * schema to Claude-compatible shape recursively.
+ */
+function toClaudeSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(toClaudeSchema);
+  if (schema && typeof schema === "object") {
+    const obj = schema as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "type" && Array.isArray(v)) {
+        // ["string", "null"] → anyOf: [{type:"string"}, {type:"null"}]
+        out.anyOf = (v as string[]).map((t) => ({ type: t }));
+      } else {
+        out[k] = toClaudeSchema(v);
+      }
+    }
+    return out;
+  }
+  return schema;
+}
+
+/**
+ * Run a PDF extraction through whichever backend is active. Returns the
+ * parsed object already matching the schema shape.
+ */
+async function runExtraction<T>(
+  pdfBase64: string,
+  prompt: string,
+  schema: Record<string, unknown>,
+  toolName: string,
+): Promise<T> {
+  const backend = getExtractorBackend();
+  if (backend === "none") {
+    throw new Error(
+      "Ni ANTHROPIC_API_KEY ni OPENAI_API_KEY están configuradas — la extracción de PDF está deshabilitada.",
+    );
+  }
+
+  if (backend === "claude-sonnet") {
+    const anthropic = anthropicClient();
+    const response = await anthropic.messages.create({
+      // Claude Sonnet 4.5 — state-of-the-art for document understanding
+      // and classification. Reads PDFs natively as images.
+      model: "claude-sonnet-4-5",
+      max_tokens: 8192,
+      tools: [
+        {
+          name: toolName,
+          description:
+            "Extract structured data from the invoice PDF. Always call this tool with complete, validated data.",
+          input_schema: toClaudeSchema(schema) as Anthropic.Tool.InputSchema,
+        },
+      ],
+      tool_choice: { type: "tool", name: toolName },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: cleanBase64(pdfBase64),
+              },
+            },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    });
+    const toolUse = response.content.find((c: any) => c.type === "tool_use") as any;
+    if (!toolUse) {
+      throw new Error("Claude no devolvió la invocación al tool");
+    }
+    return toolUse.input as T;
+  }
+
+  // GPT-4o fallback
+  const openai = openaiClient();
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "file",
+            file: {
+              filename: "invoice.pdf",
+              file_data: toDataUrl(pdfBase64),
+            },
+          } as unknown as OpenAI.Chat.ChatCompletionContentPart,
+          { type: "text", text: prompt },
+        ],
+      },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: toolName, strict: true, schema },
+    },
+  });
+  const content = completion.choices[0]?.message?.content;
+  if (!content) throw new Error("El modelo no devolvió contenido");
+  return JSON.parse(content) as T;
 }
 
 // ─── Purchase Order extractor ───────────────────────────────────────────────
@@ -287,43 +423,13 @@ export async function extractPoFromPdf(
   dataBase64: string,
   ctx: PoExtractorContext = {},
 ): Promise<ExtractedPo> {
-  const openai = client();
   const prompt = buildPoPrompt(ctx);
-  const completion = await openai.chat.completions.create({
-    // Upgraded from gpt-4o-mini → gpt-4o on 2026-04-22. Cost per invoice
-    // goes from ~$0.002 to ~$0.02, but user reported classification errors
-    // on production repair parts (miscategorized as cleaning supplies).
-    // gpt-4o reads messy PDFs + follows classification rules much better.
-    model: "gpt-4o",
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "file",
-            file: {
-              filename: "invoice.pdf",
-              file_data: toDataUrl(dataBase64),
-            },
-          } as unknown as OpenAI.Chat.ChatCompletionContentPart,
-          { type: "text", text: prompt },
-        ],
-      },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "po_extraction",
-        strict: true,
-        schema: PO_SCHEMA as unknown as Record<string, unknown>,
-      },
-    },
-  });
-
-  const content = completion.choices[0]?.message?.content;
-  if (!content) throw new Error("El modelo no devolvió contenido");
-
-  const parsed = JSON.parse(content) as ExtractedPo;
+  const parsed = await runExtraction<ExtractedPo>(
+    dataBase64,
+    prompt,
+    PO_SCHEMA as unknown as Record<string, unknown>,
+    "po_extraction",
+  );
 
   // Post-process unit normalization (same heuristics as brewery)
   const lbsWeights = new Set([11, 22, 33, 44, 55]);
@@ -404,39 +510,10 @@ Rules:
 export async function extractCostInvoiceFromPdf(
   dataBase64: string,
 ): Promise<ExtractedCostInvoice> {
-  const openai = client();
-  const completion = await openai.chat.completions.create({
-    // Upgraded from gpt-4o-mini → gpt-4o on 2026-04-22. Cost per invoice
-    // goes from ~$0.002 to ~$0.02, but user reported classification errors
-    // on production repair parts (miscategorized as cleaning supplies).
-    // gpt-4o reads messy PDFs + follows classification rules much better.
-    model: "gpt-4o",
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "file",
-            file: {
-              filename: "cost-invoice.pdf",
-              file_data: toDataUrl(dataBase64),
-            },
-          } as unknown as OpenAI.Chat.ChatCompletionContentPart,
-          { type: "text", text: COST_PROMPT },
-        ],
-      },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "cost_invoice_extraction",
-        strict: true,
-        schema: COST_SCHEMA as unknown as Record<string, unknown>,
-      },
-    },
-  });
-
-  const content = completion.choices[0]?.message?.content;
-  if (!content) throw new Error("El modelo no devolvió contenido");
-  return JSON.parse(content) as ExtractedCostInvoice;
+  return runExtraction<ExtractedCostInvoice>(
+    dataBase64,
+    COST_PROMPT,
+    COST_SCHEMA as unknown as Record<string, unknown>,
+    "cost_invoice_extraction",
+  );
 }
