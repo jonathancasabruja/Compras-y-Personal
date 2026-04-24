@@ -1461,8 +1461,8 @@ function NewPoDialog({
   };
 
   return (
-    <div style={drawerOverlay} onClick={onClose}>
-      <div style={{ ...drawerPanel, maxWidth: 780 }} onClick={(e) => e.stopPropagation()}>
+    <div style={drawerOverlay}>
+      <div style={{ ...drawerPanel, maxWidth: 780 }}>
         <div
           style={{
             display: "flex",
